@@ -1,0 +1,302 @@
+@import "tailwindcss";
+@import "@cloudflare/kumo/styles/tailwind";
+/* Tailwind ignores node_modules by default, so we source Kumo and Streamdown for class extraction. */
+@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+}
+
+/* assistant-ui primitives intentionally ship without visual chrome. */
+.aui-action-button,
+.aui-composer-button,
+.aui-send-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.aui-action-button {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: inherit;
+}
+
+.aui-action-button:hover:not(:disabled),
+.aui-composer-button:hover:not(:disabled) {
+  background: var(--color-kumo-tint);
+  color: var(--text-color-kumo-default);
+}
+
+.aui-composer-button {
+  min-height: 2rem;
+  gap: 0.35rem;
+  border-radius: 0.5rem;
+  padding: 0 0.55rem;
+  background: transparent;
+  color: var(--text-color-kumo-subtle);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.aui-send-button {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.7rem;
+  background: var(--color-kumo-brand);
+  color: white;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+
+.aui-send-button:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.aui-action-button:focus-visible,
+.aui-composer-button:focus-visible,
+.aui-send-button:focus-visible {
+  outline: 2px solid var(--color-kumo-brand);
+  outline-offset: 2px;
+}
+
+.aui-action-button:disabled,
+.aui-composer-button:disabled,
+.aui-send-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+[role="listitem"] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+
+/* Story workbench uses container queries because it can be a full-screen sheet
+   or a narrow desktop side panel independent of the browser viewport. */
+.story-workbench {
+  container-name: story-workbench;
+  container-type: inline-size;
+}
+
+.story-design-board-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16rem;
+  min-height: 0;
+}
+
+.story-canvas-index {
+  border-top: 0;
+  border-left-width: 1px;
+  border-left-style: solid;
+}
+
+.story-design-canvas-viewport {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.story-canvas-interactive {
+  transition: filter 120ms ease;
+}
+
+.story-canvas-interactive:focus-visible {
+  filter:
+    drop-shadow(0 0 1px var(--color-kumo-focus))
+    drop-shadow(0 0 3px var(--color-kumo-focus));
+}
+
+/* Kumo's primary foreground is a text token rather than a generic color
+   token, so SVG strokes need an explicit semantic bridge. */
+.story-stroke-default {
+  stroke: var(--text-color-kumo-default);
+}
+
+.story-history-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(15rem, 0.8fr) minmax(18rem, 1fr);
+  gap: 0.5rem;
+}
+
+.story-history-preview {
+  grid-column: 1 / -1;
+}
+
+.story-json-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18rem;
+  min-height: 0;
+}
+
+.story-json-validation {
+  border-top: 0;
+  border-left-width: 1px;
+  border-left-style: solid;
+}
+
+@container story-workbench (max-width: 43.999rem) {
+  .story-design-board-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(16rem, 2fr) minmax(8rem, 1fr);
+    overflow: auto;
+  }
+
+  .story-canvas-index {
+    border-top-width: 1px;
+    border-top-style: solid;
+    border-left: 0;
+  }
+
+  .story-history-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(3, minmax(18rem, auto));
+  }
+
+  .story-history-preview {
+    grid-column: auto;
+  }
+
+  .story-json-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(18rem, 1fr) minmax(10rem, 0.55fr);
+    overflow: auto;
+  }
+
+  .story-json-validation {
+    border-top-width: 1px;
+    border-top-style: solid;
+    border-left: 0;
+  }
+}
+
+@container story-workbench (max-width: 29.999rem) {
+  .story-minimap {
+    right: 0.5rem;
+    bottom: 0.5rem;
+  }
+
+  .story-minimap > div {
+    display: none;
+  }
+
+  .story-minimap svg {
+    width: 8rem;
+    height: 5.25rem;
+  }
+}
+
+/* Streamdown theme bridge — maps shadcn-style tokens to Kumo semantics */
+.sd-theme {
+  --color-primary: light-dark(#e07315, #f6821f);
+  --color-primary-foreground: light-dark(#ffffff, #ffffff);
+  --color-foreground: light-dark(#111827, #e8eaed);
+  --color-background: light-dark(#ffffff, #08090d);
+  --color-muted: light-dark(#f0f2f5, #1c1f28);
+  --color-muted-foreground: light-dark(#6b7280, #9aa0ab);
+  --color-border: light-dark(#e2e5eb, #2c3040);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+@keyframes aui-streaming-cursor-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes aui-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.aui-streaming-content > :last-child::after {
+  animation: aui-streaming-cursor-blink 900ms steps(1, end) infinite;
+}
+
+.aui-thinking-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: currentColor;
+  animation: aui-thinking-pulse 1s ease-in-out infinite;
+}
+
+.sd-theme .rounded-xl:has(pre) {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0.5rem 0;
+  background: none;
+}
+.sd-theme .rounded-xl:has(pre) > :not(:has(pre)):not(pre) {
+  display: none !important;
+}
+.sd-theme pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  background: var(--color-muted);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  border: none;
+  margin: 0;
+}
+.sd-theme pre code {
+  all: unset;
+  font: inherit;
+  /* `all: unset` also wipes Streamdown's line-number counter — restore it,
+     otherwise every line renders as "1" */
+  counter-reset: line;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

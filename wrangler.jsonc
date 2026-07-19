@@ -1,0 +1,85 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "hello-think",
+  // Browser Rendering powers two surfaces: the execute tool's `cdp.*`
+  // connector (interactive automation) and the stateless Quick Action tools
+  // Local development uses the local Browser Rendering session; production
+  // still receives the normal BROWSER binding when Wrangler deploys the Worker.
+  "browser": { "binding": "BROWSER", "remote": false },
+  // 2026-03-24+ is the minimum for the Quick Actions binding (`quickAction`).
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "not_found_handling": "single-page-application",
+    // Only the OAuth and auth-gated chat routes are handled by the Worker.
+    // `/agents/*` is deliberately NOT routed here — the only way to reach
+    // MyAssistant is through `/chat*` after the Worker verifies the
+    // authenticated GitHub user, so the browser cannot address another
+    // user's DO directly by name.
+    "run_worker_first": ["/auth/*", "/chat", "/chat/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "ThinkAgent_Assistant",
+        "name": "AssistantDirectory"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "hello-think-files"
+    }
+  ],
+  "workflows": [
+    {
+      "binding": "DOCUMENT_INGEST_WORKFLOW",
+      "name": "hello-think-document-ingest",
+      "class_name": "DocumentIngestWorkflow"
+    }
+  ],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "main": "src/worker.ts",
+  // Only these names may be inferred from .env/.env.local/process.env during
+  // local development. This prevents unrelated shell credentials from being
+  // copied into the generated Worker sandbox.
+  "secrets": {
+    "required": [
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
+      "AI_GATEWAY_BASE_URL",
+      "AI_GATEWAY_TOKEN",
+      "STORY_GITHUB_PRIVATE_KEY"
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["ThinkAgent_Assistant"],
+      "tag": "v1"
+    }
+  ],
+  "vars": {
+    // Local loopback escape hatch (see src/server.ts). The server ignores this
+    // value on every non-loopback host, including workers.dev/custom domains.
+    // DEV_USER is a plain local-only var, not a secret inferred from dotenv.
+    // `secrets.required` above filters the process environment separately.
+    "DEV_USER": "local",
+    // The local test values are injected from the external Cloudflare config.
+    // Keep credentials out of this tracked file.
+    "AI_GATEWAY_PROVIDER_ALIAS": "default",
+    "LLM_DEFAULT_MODEL": "deepseek-v4-flash",
+    // Public GitHub App/repository identifiers. STORY_GITHUB_PRIVATE_KEY is
+    // injected as a local process secret by scripts/start-local.mjs and must
+    // be configured as a Worker secret in deployed environments.
+    "STORY_GITHUB_APP_ID": "4335058",
+    "STORY_GITHUB_INSTALLATION_ID": "147497819",
+    "STORY_GITHUB_OWNER": "lusess123",
+    "STORY_GITHUB_REPO": "dsl-data",
+    "STORY_GITHUB_DEFAULT_BRANCH": "main",
+    "STORY_GITHUB_PATH": "stories/default/story.json",
+    // Comma-separated immutable numeric GitHub user IDs. Login names are
+    // intentionally rejected; production is fail-closed when this is empty.
+    "STORY_ALLOWED_GITHUB_USERS": "11750878"
+  }
+}

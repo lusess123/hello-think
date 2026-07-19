@@ -1,0 +1,53 @@
+{
+  "name": "hello-think",
+  "description": "Think-based assistant showcasing all Project Think features",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node scripts/start-local.mjs",
+    "build": "node scripts/build.mjs",
+    "deploy": "npm run build && wrangler deploy",
+    "test": "vitest --run --config src/tests/vitest.config.ts",
+    "types": "think types"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "3.0.70",
+    "@ai-sdk/react": "3.0.204",
+    "@assistant-ui/react": "0.14.27",
+    "@cloudflare/codemode": "*",
+    "@cloudflare/kumo": "^2.6.0",
+    "@cloudflare/shell": "*",
+    "@cloudflare/think": "*",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@streamdown/code": "^1.1.1",
+    "@tanstack/react-virtual": "3.14.6",
+    "agents": "*",
+    "ai": "^6.0.202",
+    "nanoid": "^5.1.16",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "streamdown": "^2.5.0",
+    "unpdf": "1.6.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.42.3",
+    "@cloudflare/vitest-pool-workers": "0.16.20",
+    "@cloudflare/workers-types": "4.20260629.1",
+    "@tailwindcss/vite": "^4",
+    "@types/node": "^26.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^6.0.3",
+    "vite": "8.1.0",
+    "vitest": "4.1.9",
+    "wrangler": "4.105.0"
+  }
+}
