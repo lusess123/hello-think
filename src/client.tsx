@@ -27,7 +27,8 @@ import {
   useEffect,
   useRef,
   useMemo,
-  type ReactNode
+  type ReactNode,
+  type Ref
 } from "react";
 import {
   WebSpeechDictationAdapter,
@@ -90,6 +91,7 @@ import {
   ProductPromptDialog
 } from "./components/product-dialog";
 import { normalizedRename } from "./components/product-dialog-model";
+import { getMobileSidebarAccessibility } from "./components/mobile-sidebar-model";
 import { StoryPanel } from "./story";
 import {
   AssistantComposer,
@@ -261,6 +263,7 @@ function Chat({
   addMcpServer,
   removeMcpServer,
   onOpenSidebar,
+  sidebarTriggerRef,
   storyPanelOpen,
   onToggleStoryPanel,
   onRequestRename,
@@ -294,6 +297,7 @@ function Chat({
   /** Remove an MCP server from the shared registry. */
   removeMcpServer: (id: string) => Promise<void>;
   onOpenSidebar: () => void;
+  sidebarTriggerRef: Ref<HTMLButtonElement>;
   storyPanelOpen: boolean;
   onToggleStoryPanel: () => void;
   onRequestRename: () => void;
@@ -696,6 +700,7 @@ function Chat({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <Button
+              ref={sidebarTriggerRef}
               variant="ghost"
               size="sm"
               shape="square"
@@ -1371,6 +1376,8 @@ function ChatSidebar({
   onRename,
   onDelete,
   open,
+  accessibility,
+  initialFocusRef,
   onClose,
   user,
   onSignOut
@@ -1382,6 +1389,8 @@ function ChatSidebar({
   onRename: (chat: ChatSummary) => void;
   onDelete: (chat: ChatSummary) => void;
   open: boolean;
+  accessibility: ReturnType<typeof getMobileSidebarAccessibility>;
+  initialFocusRef: Ref<HTMLButtonElement>;
   onClose: () => void;
   user: AuthUser;
   onSignOut: () => Promise<void>;
@@ -1402,6 +1411,8 @@ function ChatSidebar({
 
   return (
     <aside
+      inert={accessibility.inert}
+      aria-hidden={accessibility.ariaHidden}
       className={`fixed inset-y-0 left-0 z-50 flex h-full w-72 shrink-0 flex-col border-r border-kumo-line bg-kumo-base shadow-xl transition-transform md:static md:z-auto md:w-64 md:translate-x-0 md:shadow-none ${
         open ? "translate-x-0" : "-translate-x-full"
       }`}
@@ -1411,6 +1422,7 @@ function ChatSidebar({
         <h1 className="text-sm font-semibold text-kumo-default">Assistant</h1>
         <Badge variant="secondary">Think</Badge>
         <Button
+          ref={initialFocusRef}
           variant="ghost"
           size="sm"
           shape="square"
@@ -1524,6 +1536,24 @@ function ChatSidebar({
   );
 }
 
+const DESKTOP_SIDEBAR_MEDIA_QUERY = "(min-width: 768px)";
+
+function useDesktopSidebar(): boolean {
+  const [isDesktop, setIsDesktop] = useState(() =>
+    window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches
+  );
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
+    const update = () => setIsDesktop(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener("change", update);
+    return () => mediaQuery.removeEventListener("change", update);
+  }, []);
+
+  return isDesktop;
+}
+
 // ── Multi-chat shell (sidebar + active chat) ───────────────────────────
 
 function MultiChatApp({
@@ -1554,6 +1584,41 @@ function MultiChatApp({
   const [deleteTarget, setDeleteTarget] = useState<ChatSummary | null>(null);
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [chatActionError, setChatActionError] = useState<string | null>(null);
+  const isDesktopSidebar = useDesktopSidebar();
+  const sidebarInitialFocusRef = useRef<HTMLButtonElement>(null);
+  const sidebarTriggerElementRef = useRef<HTMLButtonElement | null>(null);
+  const restoreSidebarTriggerFocusRef = useRef(false);
+  const sidebarAccessibility = getMobileSidebarAccessibility(
+    sidebarOpen,
+    isDesktopSidebar
+  );
+
+  const sidebarTriggerRef = useCallback((element: HTMLButtonElement | null) => {
+    sidebarTriggerElementRef.current = element;
+    if (element && restoreSidebarTriggerFocusRef.current) {
+      restoreSidebarTriggerFocusRef.current = false;
+      element.focus();
+    }
+  }, []);
+
+  const openSidebar = useCallback(() => {
+    restoreSidebarTriggerFocusRef.current = false;
+    setSidebarOpen(true);
+    if (!isDesktopSidebar) {
+      window.requestAnimationFrame(() => sidebarInitialFocusRef.current?.focus());
+    }
+  }, [isDesktopSidebar]);
+
+  const closeSidebar = useCallback(() => {
+    setSidebarOpen(false);
+    if (!isDesktopSidebar) {
+      window.requestAnimationFrame(() => {
+        const trigger = sidebarTriggerElementRef.current;
+        if (trigger) trigger.focus();
+        else restoreSidebarTriggerFocusRef.current = true;
+      });
+    }
+  }, [isDesktopSidebar]);
 
   // Auto-select the most-recently-active chat when the sidebar loads or
   // when the currently-active chat is deleted from under us. The
@@ -1573,11 +1638,11 @@ function MultiChatApp({
     try {
       const created = await createChat();
       setActiveId(created.id);
-      setSidebarOpen(false);
+      closeSidebar();
     } catch (err) {
       console.error("Failed to create chat:", err);
     }
-  }, [createChat]);
+  }, [closeSidebar, createChat]);
 
   const handleRename = useCallback(
     (chat: ChatSummary) => {
@@ -1660,7 +1725,7 @@ function MultiChatApp({
           type="button"
           className="fixed inset-0 z-40 bg-black/30 md:hidden"
           aria-label="关闭聊天列表"
-          onClick={() => setSidebarOpen(false)}
+          onClick={closeSidebar}
         />
       )}
       <ChatSidebar
@@ -1668,13 +1733,15 @@ function MultiChatApp({
         activeId={activeId}
         onSelect={(id) => {
           setActiveId(id);
-          setSidebarOpen(false);
+          closeSidebar();
         }}
         onCreate={handleCreate}
         onRename={handleRename}
         onDelete={handleDelete}
         open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        accessibility={sidebarAccessibility}
+        initialFocusRef={sidebarInitialFocusRef}
+        onClose={closeSidebar}
         user={user}
         onSignOut={handleSignOut}
       />
@@ -1696,7 +1763,8 @@ function MultiChatApp({
               mcpState={mcpState}
               addMcpServer={addMcpServer}
               removeMcpServer={removeMcpServer}
-              onOpenSidebar={() => setSidebarOpen(true)}
+              onOpenSidebar={openSidebar}
+              sidebarTriggerRef={sidebarTriggerRef}
               storyPanelOpen={storyPanelOpen}
               onToggleStoryPanel={() => setStoryPanelOpen((open) => !open)}
               onRequestRename={() => handleRename(activeChat)}
@@ -1708,7 +1776,8 @@ function MultiChatApp({
             ready={directoryReady}
             onCreate={handleCreate}
             hasChats={chats.length > 0}
-            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenSidebar={openSidebar}
+            sidebarTriggerRef={sidebarTriggerRef}
           />
           )}
         </div>
@@ -1763,12 +1832,14 @@ function EmptyChatView({
   ready,
   onCreate,
   hasChats,
-  onOpenSidebar
+  onOpenSidebar,
+  sidebarTriggerRef
 }: {
   ready: boolean;
   onCreate: () => void;
   hasChats: boolean;
   onOpenSidebar: () => void;
+  sidebarTriggerRef: Ref<HTMLButtonElement>;
 }) {
   if (!ready) {
     return <LoadingView message="Connecting…" />;
@@ -1780,6 +1851,7 @@ function EmptyChatView({
   return (
     <div className="relative h-full flex items-center justify-center p-8">
       <Button
+        ref={sidebarTriggerRef}
         variant="ghost"
         shape="square"
         className="absolute left-3 top-3 md:hidden"

@@ -509,10 +509,11 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
       }
 
       if (request.method === "GET" && suffix === "events") {
+        const beforeId = numericQuery(url, "beforeId", 0);
         return documentJson({
-          events: this.getStoryStore().listEvents(
-            this.storyPath,
-            numericQuery(url, "limit", 100)
+          ...this.storyEventPage(
+            numericQuery(url, "limit", 100),
+            beforeId > 0 ? beforeId : undefined
           )
         });
       }
@@ -736,15 +737,15 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
   }
 
   /** Compact Git + working-copy history for the model's version vocabulary. */
-  async getStoryHistory(limit = 50) {
+  async getStoryHistory(limit = 50, beforeId?: number) {
     const workspace = await this.ensureStoryWorkspace();
     const boundedLimit = Math.min(100, Math.max(1, Math.floor(limit)));
-    const [versions, events] = await Promise.all([
+    const [versions, eventPage] = await Promise.all([
       this.getStoryStore().listVersions(workspace.path, {
         page: 1,
         perPage: boundedLimit
       }),
-      Promise.resolve(this.getStoryStore().listEvents(workspace.path, boundedLimit))
+      Promise.resolve(this.storyEventPage(boundedLimit, beforeId))
     ]);
     return {
       current: {
@@ -762,7 +763,7 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
         authoredAt: version.authoredAt,
         author: version.authorLogin ?? version.authorName ?? "GitHub App"
       })),
-      revisions: events.map((event) => ({
+      revisions: eventPage.events.map((event) => ({
         id: event.id,
         revision: event.revision,
         kind: event.kind,
@@ -774,7 +775,22 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
         restoredFromSha: event.restoredFromSha,
         hasSnapshot: event.afterStory !== null,
         diffSummary: event.diff.business.summary
-      }))
+      })),
+      nextBeforeId: eventPage.nextBeforeId
+    };
+  }
+
+  private storyEventPage(limit: number, beforeId?: number) {
+    const boundedLimit = Math.min(500, Math.max(1, Math.floor(limit)));
+    const events = this.getStoryStore().listEvents(this.storyPath, boundedLimit, beforeId);
+    const oldestId = events.at(-1)?.id;
+    const hasMore =
+      events.length === boundedLimit &&
+      oldestId !== undefined &&
+      this.getStoryStore().listEvents(this.storyPath, 1, oldestId).length > 0;
+    return {
+      events,
+      nextBeforeId: hasMore ? oldestId : undefined
     };
   }
 

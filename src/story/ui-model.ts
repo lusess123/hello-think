@@ -3,7 +3,8 @@ import type {
   StoryBond,
   StoryDiffAction,
   StoryDiffCategory,
-  StoryDiffItem
+  StoryDiffItem,
+  StoryWorkspaceEvent
 } from "./types";
 
 export type StoryEditorTarget =
@@ -71,6 +72,14 @@ export function keepLocalDraft<T>(
     seenRevision: revision,
     conflictRevision: undefined
   };
+}
+
+export function mergeStoryEvents(
+  current: readonly StoryWorkspaceEvent[],
+  incoming: readonly StoryWorkspaceEvent[]
+): StoryWorkspaceEvent[] {
+  const known = new Set(current.map((event) => event.id));
+  return [...current, ...incoming.filter((event) => !known.has(event.id))];
 }
 
 /** Matches the backend's stable source/target + occurrence Git diff key. */

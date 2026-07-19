@@ -34,7 +34,7 @@ interface StoryDirectoryRpc {
   getStoryState(): Promise<unknown>;
   getStoryWorkspace(): Promise<unknown>;
   getStoryDiff(): Promise<unknown>;
-  getStoryHistory(limit?: number): Promise<unknown>;
+  getStoryHistory(limit?: number, beforeId?: number): Promise<unknown>;
   updateStoryWorkspace(input: {
     story: unknown;
     expectedRevision: number;
@@ -344,13 +344,19 @@ Treat the repository, branch, HEAD, workspace revision, dirty status, and restor
 
       get_story_history: tool({
         description:
-          "List both Git commits and Durable Object workspace revisions, including the exact current HEAD/revision and restore provenance. Use this before answering version questions or restoring a version.",
+          "List both Git commits and Durable Object workspace revisions, including the exact current HEAD/revision and restore provenance. Pass nextBeforeId back as beforeId to page through older revisions before restoring one.",
         inputSchema: z.object({
-          limit: z.number().int().min(1).max(100).optional().default(50)
+          limit: z.number().int().min(1).max(100).optional().default(50),
+          beforeId: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Cursor returned as nextBeforeId by the previous history page")
         }),
-        execute: async ({ limit }) => {
+        execute: async ({ limit, beforeId }) => {
           const directory = await this.getStoryDirectory();
-          return directory.getStoryHistory(limit);
+          return directory.getStoryHistory(limit, beforeId);
         }
       }),
 

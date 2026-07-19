@@ -829,18 +829,28 @@ export class StoryWorkspaceStore {
     });
   }
 
-  listEvents(path: string, limit = 100): StoryWorkspaceEvent[] {
+  listEvents(
+    path: string,
+    limit = 100,
+    beforeId?: number
+  ): StoryWorkspaceEvent[] {
     const normalizedPath = normalizeStoryPath(path);
+    const boundedLimit = Math.min(500, Math.max(1, Math.floor(limit)));
+    const cursor =
+      beforeId === undefined
+        ? undefined
+        : Math.max(1, Math.floor(beforeId));
     const rows = this.sql.exec<StoryWorkspaceEventRow>(
       `SELECT id, path, revision, kind, actor, source, summary,
               base_commit_sha, restored_from_sha, before_story_json,
               after_story_json, metadata_json, created_at, diff_json
        FROM story_workspace_events
-       WHERE path = ?
+       WHERE path = ?${cursor === undefined ? "" : " AND id < ?"}
        ORDER BY id DESC
        LIMIT ?`,
       normalizedPath,
-      Math.min(500, Math.max(1, Math.floor(limit)))
+      ...(cursor === undefined ? [] : [cursor]),
+      boundedLimit
     );
     return [...rows].map((row) => ({
       id: row.id,

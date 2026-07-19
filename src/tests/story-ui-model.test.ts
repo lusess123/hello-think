@@ -15,10 +15,30 @@ import {
   editLocalDraft,
   findStoryBondIndex,
   keepLocalDraft,
+  mergeStoryEvents,
   receiveRemoteDraft,
   storyBondKey,
   storyEditorTargetId
 } from "../story/ui-model";
+
+describe("story event history pagination", () => {
+  it("appends older pages without duplicating overlapping events", () => {
+    const event = (id: number) => ({
+      id,
+      path: "stories/default/story.json",
+      revision: id,
+      kind: "update" as const,
+      actor: "user:tester",
+      source: "panel",
+      createdAt: id
+    });
+
+    expect(
+      mergeStoryEvents([event(5), event(4), event(3)], [event(3), event(2), event(1)])
+        .map((item) => item.id)
+    ).toEqual([5, 4, 3, 2, 1]);
+  });
+});
 
 describe("story UI local draft reconciliation", () => {
   it("follows remote revisions while the local editor is clean", () => {

@@ -130,9 +130,12 @@ export async function fetchStoryVersion(
 }
 
 export async function fetchStoryEvents(
-  input: { limit?: number; signal?: AbortSignal } = {}
-): Promise<{ events: StoryWorkspaceEvent[] }> {
+  input: { limit?: number; beforeId?: number; signal?: AbortSignal } = {}
+): Promise<{ events: StoryWorkspaceEvent[]; nextBeforeId?: number }> {
   const search = new URLSearchParams({ limit: String(input.limit ?? 200) });
+  if (input.beforeId !== undefined) {
+    search.set("beforeId", String(input.beforeId));
+  }
   return request(`${STORY_API}/events?${search.toString()}`, {
     signal: input.signal
   });

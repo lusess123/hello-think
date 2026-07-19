@@ -538,6 +538,58 @@ describe("StoryWorkspaceStore", () => {
     });
   });
 
+  it("pages through more than 500 events and restores the oldest snapshot", async () => {
+    const result = await inStore(repository(), async (store) => {
+      let workspace = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+
+      for (let revision = 1; revision <= 501; revision += 1) {
+        const changed = structuredClone(workspace.workingStory);
+        changed.cast[0].identity = `第 ${revision} 版身份`;
+        workspace = store.update({
+          path: workspace.path,
+          expectedRevision: workspace.revision,
+          story: changed,
+          actor: revision % 2 === 0 ? "user:tester" : "agent:chat-a",
+          source: revision % 2 === 0 ? "relationship-panel" : "agent",
+          summary: `生成第 ${revision} 版快照`,
+        });
+      }
+
+      const events = [];
+      let beforeId: number | undefined;
+      for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+        const page = store.listEvents(workspace.path, 100, beforeId);
+        events.push(...page);
+        if (page.length < 100) break;
+        beforeId = page.at(-1)!.id;
+      }
+
+      const oldest = events.at(-1)!;
+      const restored = store.restoreEventSnapshot({
+        path: workspace.path,
+        eventId: oldest.id,
+        expectedRevision: workspace.revision,
+        actor: "user:tester",
+        source: "ui-event-restore",
+      });
+      return { events, oldest, restored };
+    });
+
+    expect(new Set(result.events.map((event) => event.id)).size).toBe(502);
+    expect(result.events).toHaveLength(502);
+    expect(result.oldest).toMatchObject({ kind: "initialize", revision: 0 });
+    expect(result.restored).toMatchObject({
+      revision: 502,
+      restoredFromEventId: result.oldest.id,
+    });
+    expect(result.restored.workingStory.cast[0].identity).toBe("刑警");
+  });
+
   it("represents a missing repository file as a reviewable added working copy", async () => {
     const commitFile = vi.fn<StoryRepositoryClient["commitFile"]>(async (input) => ({
       sha: "first-story-commit",

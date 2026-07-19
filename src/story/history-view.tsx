@@ -21,6 +21,7 @@ import type {
   StoryWorkspace,
   StoryWorkspaceEvent
 } from "./types";
+import { mergeStoryEvents } from "./ui-model";
 import {
   StoryEmpty,
   StorySectionHeader,
@@ -57,8 +58,10 @@ export function HistoryView({
   const [versions, setVersions] = useState<StoryVersion[]>([]);
   const [events, setEvents] = useState<StoryWorkspaceEvent[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [nextEventBeforeId, setNextEventBeforeId] = useState<number | undefined>();
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingMoreEvents, setLoadingMoreEvents] = useState(false);
   const [selection, setSelection] = useState<HistorySelection | null>(null);
   const [viewingSha, setViewingSha] = useState<string | null>(null);
   const refreshSequence = useRef(0);
@@ -72,13 +75,14 @@ export function HistoryView({
     setLoading(true);
     Promise.all([
       fetchStoryHistory({ limit: 80 }),
-      fetchStoryEvents({ limit: 300 })
+      fetchStoryEvents({ limit: 100 })
     ])
       .then(([history, eventHistory]) => {
         if (sequence !== refreshSequence.current) return;
         setVersions(history.versions);
         setNextCursor(history.nextCursor);
         setEvents(eventHistory.events);
+        setNextEventBeforeId(eventHistory.nextBeforeId);
       })
       .catch((historyError) => {
         if (sequence === refreshSequence.current) {
@@ -114,6 +118,27 @@ export function HistoryView({
       onError(`读取更早版本失败：${errorMessage(historyError)}`);
     } finally {
       setLoadingMore(false);
+    }
+  };
+
+  const loadMoreEvents = async () => {
+    if (!nextEventBeforeId || loadingMoreEvents) return;
+    const sequence = refreshSequence.current;
+    setLoadingMoreEvents(true);
+    try {
+      const result = await fetchStoryEvents({
+        beforeId: nextEventBeforeId,
+        limit: 100
+      });
+      if (sequence !== refreshSequence.current) return;
+      setEvents((current) => mergeStoryEvents(current, result.events));
+      setNextEventBeforeId(result.nextBeforeId);
+    } catch (historyError) {
+      if (sequence === refreshSequence.current) {
+        onError(`读取更早工作区留痕失败：${errorMessage(historyError)}`);
+      }
+    } finally {
+      setLoadingMoreEvents(false);
     }
   };
 
@@ -258,6 +283,16 @@ export function HistoryView({
             );
           }}
         />
+        {nextEventBeforeId && (
+          <button
+            type="button"
+            disabled={loadingMoreEvents}
+            className="shrink-0 border-t border-kumo-line bg-kumo-elevated py-2 font-mono text-[10px] text-kumo-accent hover:bg-kumo-hover disabled:opacity-40"
+            onClick={() => void loadMoreEvents()}
+          >
+            {loadingMoreEvents ? "正在加载…" : "加载更早 revision"}
+          </button>
+        )}
       </div>
 
       <div className={`${STORY_PANEL_CLASS} story-history-preview flex min-h-72 flex-col overflow-hidden`}>
