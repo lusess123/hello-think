@@ -2,10 +2,8 @@ import { callable } from "agents";
 import {
   Think,
   Session,
-  skills,
   defaultContextOverflowClassifier
 } from "@cloudflare/think";
-import bundledSkills from "agents:skills";
 import type { WorkspaceFsLike } from "@cloudflare/shell";
 import { createExecuteTool } from "@cloudflare/think/tools/execute";
 import { createWorkspaceTools } from "@cloudflare/think/tools/workspace";
@@ -53,6 +51,12 @@ interface StoryDirectoryRpc {
   ): Promise<unknown>;
 }
 
+type EnvWithOptionalWorkerLoader = Env & { LOADER?: WorkerLoader };
+
+function getWorkerLoader(env: Env): WorkerLoader | undefined {
+  return (env as EnvWithOptionalWorkerLoader).LOADER;
+}
+
 // ── MyAssistant — one Think DO per chat (a facet of the directory) ────
 
 export class MyAssistant extends Think<Env> {
@@ -61,7 +65,10 @@ export class MyAssistant extends Think<Env> {
   };
   override maxSteps = 10;
   chatRecovery = true;
-  extensionLoader = this.env.LOADER;
+  // Dynamic Workers are a paid-plan capability. Keep the integration
+  // available for deployments that bind LOADER, while allowing the core
+  // assistant to run without it on the Workers free plan.
+  extensionLoader = getWorkerLoader(this.env);
 
   /**
    * Opt-in, read-only HTTP fetch. Registers a `fetch_url` tool so the model
@@ -146,28 +153,16 @@ export class MyAssistant extends Think<Env> {
   // categories.
   override classifyChatError = defaultContextOverflowClassifier;
 
-  // Bundled Agent Skills colocated under `./skills` (resolved through the
-  // `agents:skills` specifier). The model advertises the skill catalog in
-  // its prompt and activates a skill on demand via `activate_skill` rather
-  // than carrying every instruction in every turn.
-  getSkills() {
-    return [bundledSkills];
-  }
-
-  // Lets skills expose runnable scripts (`run_skill_script`). Scripts run in
-  // a bounded Worker via the Worker Loader, with read-only access to this
-  // chat's shared workspace so a script can inspect saved files.
-  getSkillScriptRunner() {
-    return skills.runner({
-      loader: this.env.LOADER,
-      workspaceInstance: this.workspace
-    });
-  }
-
   configureSession(session: Session) {
+    const hasWorkerLoader = Boolean(getWorkerLoader(this.env));
+    const defaultPersona = hasWorkerLoader
+      ? "You are a capable technical assistant. You have access to a persistent workspace, sandboxed code execution, a real browser you can drive over the Chrome DevTools Protocol (the `cdp.*` namespace inside execute), stateless one-shot browsing tools (browser_markdown, browser_extract, browser_links, browser_scrape), a `fetch_url` tool for reading allowlisted web pages and APIs directly, and the ability to create new tools on the fly. You think before you act, and you prefer writing code over making many sequential tool calls."
+      : "You are a capable technical assistant. You have access to a persistent workspace, stateless one-shot browsing tools (browser_markdown, browser_extract, browser_links, browser_scrape), and a `fetch_url` tool for reading allowlisted web pages and APIs directly. You think before you act, and you use the available workspace and browsing tools directly.";
     const persona =
-      this.getConfig<AgentConfig>()?.persona ||
-      "You are a capable technical assistant. You have access to a persistent workspace, sandboxed code execution, a real browser you can drive over the Chrome DevTools Protocol (the `cdp.*` namespace inside execute), stateless one-shot browsing tools (browser_markdown, browser_extract, browser_links, browser_scrape), a `fetch_url` tool for reading allowlisted web pages and APIs directly, and the ability to create new tools on the fly. You think before you act, and you prefer writing code over making many sequential tool calls.";
+      this.getConfig<AgentConfig>()?.persona || defaultPersona;
+    const dynamicWorkerInstructions = hasWorkerLoader
+      ? "The execute tool runs JavaScript you write in a sandboxed environment. Use it for multi-file operations, data transformations, or any task that would require many sequential tool calls. Inside that sandbox the only globals are the connector namespaces listed in the tool description (e.g. `state.*` for workspace files, `tools.*` for your tools) plus `codemode` — there is no `host` object, `fs`, or Node.js API.\nFor rendered pages, link discovery, or AI extraction, use the one-shot Quick Action tools — `browser_markdown` to read a page, `browser_extract` to pull structured data, `browser_links` to list links, `browser_scrape` to grab elements — and only reach for the interactive `cdp.*` API inside execute when you need to click, type, or navigate across multiple steps.\nYou can create extensions: new tools that persist across conversations. Offer to create one when a recurring task would benefit from it."
+      : "This deployment does not expose Dynamic Worker tools, so sandboxed execute, runnable skill scripts, persistent runtime extensions, and interactive `cdp.*` automation are unavailable. Use the normal workspace tools, `fetch_url`, and the one-shot Quick Action browser tools instead, and never claim to have run unavailable tools.";
 
     return session
       .withContext("soul", {
@@ -176,10 +171,9 @@ export class MyAssistant extends Think<Env> {
             `${persona}
 
 Be concise. Prefer short, direct answers over lengthy explanations.
-The execute tool runs JavaScript you write in a sandboxed environment. Use it for multi-file operations, data transformations, or any task that would require many sequential tool calls. Inside that sandbox the only globals are the connector namespaces listed in the tool description (e.g. \`state.*\` for workspace files, \`tools.*\` for your tools) plus \`codemode\` — there is no \`host\` object, \`fs\`, or Node.js API.
-For reading a known URL or API, prefer the \`fetch_url\` tool — it is a fast, read-only HTTP GET over any public URL, and large responses spill to the workspace. For rendered pages, link discovery, or AI extraction, use the one-shot Quick Action tools — \`browser_markdown\` to read a page, \`browser_extract\` to pull structured data, \`browser_links\` to list links, \`browser_scrape\` to grab elements — and only reach for the interactive \`cdp.*\` API inside execute when you need to click, type, or navigate across multiple steps.
+${dynamicWorkerInstructions}
+For reading a known URL or API, prefer the \`fetch_url\` tool — it is a fast, read-only HTTP GET over any public URL, and large responses spill to the workspace.
 When a question concerns an uploaded document, use \`search_documents\` with a focused query even if the user did not repeat its document_id. Pass documentIds when a specific id is known; otherwise search the user's ready documents. Retrieve only the evidence needed for the question, cite each answer with the returned citation label, and never load an entire PDF or large text into model context.
-You can create extensions: new tools that persist across conversations. Offer to create one when a recurring task would benefit from it.
 When you learn something about the user or their project, save it to memory.`
         }
       })
@@ -237,50 +231,46 @@ Treat the repository, branch, HEAD, workspace revision, dirty status, and restor
   }
 
   getTools(): ToolSet {
-    const extensionTools = this.extensionManager
+    const loader = getWorkerLoader(this.env);
+    const extensionTools: ToolSet = loader && this.extensionManager
       ? {
           ...createExtensionTools({ manager: this.extensionManager }),
           ...this.extensionManager.getTools()
         }
       : {};
-
-    return {
-      // Agent one-liner with overrides: the executor comes from
-      // `env.LOADER`, `cdp.*` from `env.BROWSER` (if bound), and `state.*`
-      // inside the sandbox is backed by the SHARED workspace — the
-      // `SharedWorkspace` proxy satisfies `WorkspaceFsLike`, so
-      // `state.planEdits`/`applyEdits` in chat B sees and mutates the same
-      // files chat A just wrote. This also assigns `this.codemode`, which
-      // powers the built-in `approveExecution` / `rejectExecution` /
-      // `pendingExecutions` callables behind the approval card.
-      execute: createExecuteTool(this, {
-        tools: {
-          ...createWorkspaceTools(this.workspace),
-          // Approval-gated sandbox tool: calling it pauses the run durably
-          // and renders the approval card in the client. Approving resumes
-          // the run exactly where it stopped.
-          sendAnnouncement: tool({
-            description:
-              "Send an announcement to the team channel. Requires human approval before it goes out.",
-            inputSchema: z.object({
-              message: z.string().describe("The announcement text")
-            }),
-            needsApproval: true,
-            execute: async ({ message }) => ({
-              sent: true,
-              message
-            })
+    const executeTools: ToolSet = loader
+      ? {
+          // The executor comes from `env.LOADER`, `cdp.*` from `env.BROWSER`,
+          // and `state.*` is backed by the shared workspace. This also assigns
+          // `this.codemode`, which powers the execution approval callables.
+          execute: createExecuteTool(this, {
+            tools: {
+              ...createWorkspaceTools(this.workspace),
+              sendAnnouncement: tool({
+                description:
+                  "Send an announcement to the team channel. Requires human approval before it goes out.",
+                inputSchema: z.object({
+                  message: z.string().describe("The announcement text")
+                }),
+                needsApproval: true,
+                execute: async ({ message }) => ({
+                  sent: true,
+                  message
+                })
+              })
+            }
           })
         }
-      }),
+      : {};
 
+    return {
+      ...executeTools,
       ...extensionTools,
 
       // Stateless one-shot browsing (no CDP session, no sandbox): read a page
       // as Markdown, extract structured data with AI, list links, or scrape
-      // elements. Complements the interactive `cdp.*` inside `execute` above —
-      // the model picks Quick Actions for simple reads and `execute` for
-      // multi-step automation. Shares the same `BROWSER` binding.
+      // elements. This works without a Worker Loader and shares the BROWSER
+      // binding with optional `cdp.*` automation when Dynamic Workers are on.
       ...createQuickActionTools({ browser: this.env.BROWSER }),
 
       search_documents: tool({

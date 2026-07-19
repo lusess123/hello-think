@@ -1,10 +1,9 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "hello-think",
-  // Browser Rendering powers two surfaces: the execute tool's `cdp.*`
-  // connector (interactive automation) and the stateless Quick Action tools
-  // Local development uses the local Browser Rendering session; production
-  // still receives the normal BROWSER binding when Wrangler deploys the Worker.
+  // Browser Rendering powers the stateless Quick Action tools. Deployments on
+  // a paid plan may additionally bind a Worker Loader to enable the execute
+  // tool's interactive `cdp.*` connector.
   "browser": { "binding": "BROWSER", "remote": false },
   // 2026-03-24+ is the minimum for the Quick Actions binding (`quickAction`).
   "compatibility_date": "2026-06-11",
@@ -39,7 +38,6 @@
       "class_name": "DocumentIngestWorkflow"
     }
   ],
-  "worker_loaders": [{ "binding": "LOADER" }],
   "main": "src/worker.ts",
   // Only these names may be inferred from .env/.env.local/process.env during
   // local development. This prevents unrelated shell credentials from being

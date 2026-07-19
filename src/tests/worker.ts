@@ -13,9 +13,9 @@
  *     bare `routeAgentRequest` so tests can address directories by name
  *     directly.
  *
- *   - `worker_loaders` is bound (`LOADER`) because `MyAssistant` reads
- *     `this.env.LOADER` as a class field at construction. We never
- *     actually load extensions in tests, but the binding has to exist.
+ *   - Dynamic Worker features are intentionally absent, matching the
+ *     free-plan production deployment. The shared workspace, chat routing,
+ *     story workspace, and MCP plumbing do not depend on a Worker Loader.
  *
  * No AI Gateway configuration is declared. Tests deliberately don't trigger turns —
  * `MyAssistant.getModel()` is never called. That means we don't have
@@ -37,7 +37,6 @@ import type { MyAssistant } from "../../agents/assistant/agents/my-assistant/age
 export type Env = {
   AssistantDirectory: DurableObjectNamespace<AssistantDirectory>;
   MyAssistant: DurableObjectNamespace<MyAssistant>;
-  LOADER: WorkerLoader;
 };
 
 export default {
