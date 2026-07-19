@@ -33,6 +33,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { MCPServersState } from "agents";
 import type { ChatSummary, DirectoryState } from "../agents/assistant/types";
+import { agentConnectionOptions } from "./api-client";
 
 const EMPTY_MCP_STATE: MCPServersState = {
   prompts: [],
@@ -115,6 +116,7 @@ export function useChats(): UseChats {
   const [mcpState, setMcpState] = useState<MCPServersState>(EMPTY_MCP_STATE);
 
   const directory = useAgent<DirectoryState>({
+    ...agentConnectionOptions,
     agent: "AssistantDirectory",
     basePath: "chat",
     // `onMcpUpdate` fires for every `CF_AGENT_MCP_SERVERS` broadcast

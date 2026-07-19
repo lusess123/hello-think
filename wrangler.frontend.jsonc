@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "hello-think-web",
+  "compatibility_date": "2026-06-11",
+  "routes": [
+    {
+      "pattern": "dsl.zyking.xyz",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application"
+  }
+}

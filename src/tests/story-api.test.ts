@@ -13,8 +13,9 @@ describe("story event history API", () => {
     const page = await fetchStoryEvents({ limit: 80, beforeId: 123 });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/chat/story/events?limit=80&beforeId=123",
+      "http://localhost/chat/story/events?limit=80&beforeId=123",
       expect.objectContaining({
+        credentials: "include",
         headers: expect.objectContaining({ Accept: "application/json" })
       })
     );
@@ -38,8 +39,9 @@ describe("story event history API", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/chat/story/layout",
+      "http://localhost/chat/story/layout",
       expect.objectContaining({
+        credentials: "include",
         method: "PUT",
         body: JSON.stringify({
           layout,

@@ -16,7 +16,10 @@ export default defineConfig({
   plugins: [
     think({ allowNonVirtualMain: true }),
     react(),
-    cloudflare(),
+    // Keep the integrated local dev server, but make the API Worker config
+    // explicit. Production deploys its generated Worker bundle and the client
+    // assets as two independent Workers.
+    cloudflare({ configPath: "./wrangler.jsonc" }),
     tailwindcss()
   ]
 });

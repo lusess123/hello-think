@@ -12,6 +12,7 @@ import type {
   DocumentRecord,
   DocumentSearchHit
 } from "../../agents/assistant/document-library";
+import { apiFetch, apiUrl } from "../api-client";
 import { VirtualList } from "../components/virtual-list";
 import { ProductConfirmDialog } from "../components/product-dialog";
 
@@ -77,7 +78,7 @@ export function DocumentPanel({
     setSearching(true);
     setError(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/chat/documents/search?q=${encodeURIComponent(value)}&limit=20&maxTokens=8000`
       );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -100,7 +101,7 @@ export function DocumentPanel({
       setRemoving(true);
       setError(null);
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `/chat/documents/${encodeURIComponent(document.id)}`,
           { method: "DELETE" }
         );
@@ -124,7 +125,7 @@ export function DocumentPanel({
   const retry = useCallback(async (document: DocumentRecord) => {
     setError(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/chat/documents/${encodeURIComponent(document.id)}/retry`,
         { method: "POST" }
       );
@@ -254,7 +255,9 @@ export function DocumentPanel({
               <FileTextIcon size={20} className="mt-0.5 shrink-0 text-kumo-brand" />
             )}
             <a
-              href={`/chat/documents/${encodeURIComponent(document.id)}/content`}
+              href={apiUrl(
+                `/chat/documents/${encodeURIComponent(document.id)}/content`
+              )}
               target="_blank"
               rel="noreferrer"
               className="min-w-0 flex-1"
@@ -344,7 +347,7 @@ async function fetchAllDocuments(): Promise<DocumentRecord[]> {
   const pageSize = 200;
   const documents: DocumentRecord[] = [];
   for (let offset = 0; ; offset += pageSize) {
-    const response = await fetch(
+    const response = await apiFetch(
       `/chat/documents?limit=${pageSize}&offset=${offset}`
     );
     if (!response.ok) throw new Error(`HTTP ${response.status}`);

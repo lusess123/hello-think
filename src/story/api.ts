@@ -7,6 +7,7 @@ import type {
   StoryWorkspace,
   StoryWorkspaceEvent
 } from "./types";
+import { apiFetch } from "../api-client";
 
 const STORY_API = "/chat/story";
 
@@ -174,7 +175,7 @@ export async function createStoryPullRequest(input: {
 }
 
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     ...init,
     headers: {
       Accept: "application/json",

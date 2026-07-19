@@ -59,8 +59,8 @@ routing primitive from `agents`.
 
 Open the GitHub App's **General** settings, generate a client secret, and set:
 
-- **Homepage URL:** the deployed application origin
-- **Callback URL:** `<application-origin>/auth/callback`
+- **Homepage URL:** `https://dsl.zyking.xyz`
+- **Callback URL:** `https://dsl-api.zyking.xyz/auth/callback`
 
 GitHub Apps expose a Client ID and Client Secret for the user authorization
 flow used by this application. Loopback development uses `DEV_USER=local`, so
@@ -373,11 +373,19 @@ STORY_GITHUB_PRIVATE_KEY_PATH=/absolute/path/to/key.pem npm start
 
 ## Deploying
 
-Update the GitHub App so its callback URL points at production:
+Production is split into two independent Workers:
 
 ```text
-https://your-domain.example/auth/callback
+https://dsl.zyking.xyz       hello-think-web  React static assets
+https://dsl-api.zyking.xyz   hello-think      Hono API, OAuth, Agent and storage
 ```
+
+`wrangler.jsonc` remains the API source configuration so Think and the
+Cloudflare Vite plugin read the same bindings. The production build creates
+`dist/hello_think/wrangler.api.json` with the Vite-injected `assets` section
+removed. `wrangler.frontend.jsonc` deploys `dist/client` separately as the
+assets-only frontend Worker. Keeping the API Worker name as `hello-think`
+preserves its existing Durable Object namespace and data.
 
 Configure these GitHub Actions repository secrets (local dotenv values are
 never bundled):
@@ -390,15 +398,22 @@ APP_GITHUB_CLIENT_SECRET
 AI_GATEWAY_BASE_URL
 AI_GATEWAY_TOKEN
 STORY_GITHUB_PRIVATE_KEY
+WS_TOKEN_SECRET
 ```
+
+`WS_TOKEN_SECRET` must be an independent high-entropy value. The API uses it to
+sign short-lived tokens for cross-origin Agent WebSocket connections; it is
+never included in the frontend bundle.
 
 `STORY_ALLOWED_GITHUB_USERS` in `wrangler.jsonc` is a comma-separated list of
 immutable numeric GitHub user IDs. Add every editor there; login names are
 intentionally rejected because they can be renamed and reused.
 
-Deploy by manually running the **Deploy Cloudflare Worker** GitHub Actions
-workflow. The workflow runs tests and the production build before `wrangler
-deploy`; do not deploy from a developer machine.
+Deploy by manually running the **Deploy Cloudflare API and Web** GitHub Actions
+workflow from `main`. It injects
+`VITE_API_ORIGIN=https://dsl-api.zyking.xyz`, runs tests and the production
+build, dry-runs both deployment units, deploys the API first, and deploys the
+frontend only after the API succeeds. Do not deploy from a developer machine.
 
 ## Key code
 

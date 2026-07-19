@@ -1,3 +1,5 @@
+import { apiFetch, apiUrl } from "./api-client";
+
 export type AuthUser = {
   id: number;
   login: string;
@@ -8,7 +10,7 @@ export type AuthUser = {
 export async function fetchCurrentUser(
   signal?: AbortSignal
 ): Promise<AuthUser | null> {
-  const response = await fetch("/auth/me", {
+  const response = await apiFetch("/auth/me", {
     headers: { Accept: "application/json" },
     signal
   });
@@ -25,7 +27,7 @@ export async function fetchCurrentUser(
 }
 
 export async function signOut() {
-  const response = await fetch("/auth/logout", {
+  const response = await apiFetch("/auth/logout", {
     method: "POST"
   });
 
@@ -35,5 +37,5 @@ export async function signOut() {
 }
 
 export function startGitHubLogin() {
-  window.location.href = "/auth/login";
+  window.location.href = apiUrl("/auth/login");
 }
