@@ -61,6 +61,22 @@ export interface StoryWorkspaceEvent {
   diff: StoryWorkspaceDiff;
 }
 
+export interface StoryWorkspaceEventSummary {
+  id: number;
+  path: string;
+  revision: number;
+  kind: StoryWorkspaceEventKind;
+  actor: string;
+  source: string;
+  summary: string;
+  baseCommitSha: string;
+  restoredFromSha: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: number;
+  hasSnapshot: boolean;
+  diffSummary: StoryBusinessDiff["summary"];
+}
+
 export interface StoryWorkspaceDiff {
   fileStatus: "added" | "modified" | "unchanged";
   business: StoryBusinessDiff;
@@ -129,6 +145,26 @@ interface StoryWorkspaceEventRow {
   metadata_json: string;
   created_at: number;
   diff_json: string;
+}
+
+interface StoryWorkspaceEventSummaryRow {
+  [key: string]: string | number | null;
+  id: number;
+  path: string;
+  revision: number;
+  kind: string;
+  actor: string;
+  source: string;
+  summary: string;
+  base_commit_sha: string;
+  restored_from_sha: string | null;
+  metadata_json: string;
+  created_at: number;
+  has_snapshot: number;
+  diff_added: number;
+  diff_removed: number;
+  diff_modified: number;
+  diff_total: number;
 }
 
 interface StoryWorkspaceEventColumnRow {
@@ -867,6 +903,55 @@ export class StoryWorkspaceStore {
       metadata: parseMetadata(row.metadata_json),
       createdAt: row.created_at,
       diff: JSON.parse(row.diff_json) as StoryWorkspaceDiff,
+    }));
+  }
+
+  listEventSummaries(
+    path: string,
+    limit = 100,
+    beforeId?: number
+  ): StoryWorkspaceEventSummary[] {
+    const normalizedPath = normalizeStoryPath(path);
+    const boundedLimit = Math.min(500, Math.max(1, Math.floor(limit)));
+    const cursor =
+      beforeId === undefined
+        ? undefined
+        : Math.max(1, Math.floor(beforeId));
+    const rows = this.sql.exec<StoryWorkspaceEventSummaryRow>(
+      `SELECT id, path, revision, kind, actor, source, summary,
+              base_commit_sha, restored_from_sha, metadata_json, created_at,
+              CASE WHEN after_story_json IS NOT NULL THEN 1 ELSE 0 END AS has_snapshot,
+              COALESCE(json_extract(diff_json, '$.business.summary.added'), 0) AS diff_added,
+              COALESCE(json_extract(diff_json, '$.business.summary.removed'), 0) AS diff_removed,
+              COALESCE(json_extract(diff_json, '$.business.summary.modified'), 0) AS diff_modified,
+              COALESCE(json_extract(diff_json, '$.business.summary.total'), 0) AS diff_total
+       FROM story_workspace_events
+       WHERE path = ?${cursor === undefined ? "" : " AND id < ?"}
+       ORDER BY id DESC
+       LIMIT ?`,
+      normalizedPath,
+      ...(cursor === undefined ? [] : [cursor]),
+      boundedLimit
+    );
+    return [...rows].map((row) => ({
+      id: row.id,
+      path: row.path,
+      revision: row.revision,
+      kind: row.kind as StoryWorkspaceEventKind,
+      actor: row.actor,
+      source: row.source,
+      summary: row.summary,
+      baseCommitSha: row.base_commit_sha,
+      restoredFromSha: row.restored_from_sha,
+      metadata: parseMetadata(row.metadata_json),
+      createdAt: row.created_at,
+      hasSnapshot: Boolean(row.has_snapshot),
+      diffSummary: {
+        added: row.diff_added,
+        removed: row.diff_removed,
+        modified: row.diff_modified,
+        total: row.diff_total,
+      },
     }));
   }
 

@@ -45,21 +45,22 @@ describe("story event history route", () => {
       createdAt: id,
       baseCommitSha: "head-a",
       restoredFromSha: null,
-      afterStory: {},
-      diff: {
-        business: { summary: { added: 0, removed: 0, modified: 1, total: 1 } }
-      }
+      metadata: {},
+      hasSnapshot: true,
+      diffSummary: { added: 0, removed: 0, modified: 1, total: 1 }
     }));
-    const listEvents = vi.fn(
+    const listEventSummaries = vi.fn(
       (_path: string, limit: number, beforeId?: number) =>
         allEvents
           .filter((event) => beforeId === undefined || event.id < beforeId)
           .slice(0, limit)
     );
+    const listVersions = vi.fn(async () => []);
     const directory = Object.create(AssistantDirectory.prototype) as AssistantDirectory;
     Object.defineProperties(directory, {
       ensureStoryWorkspace: {
         value: vi.fn(async () => ({
+          path: "stories/default/story.json",
           branch: "drafts/local",
           baseCommitSha: "head-a",
           revision: 5,
@@ -69,7 +70,7 @@ describe("story event history route", () => {
         }))
       },
       getStoryStore: {
-        value: () => ({ listEvents, listVersions: vi.fn(async () => []) })
+        value: () => ({ listEventSummaries, listVersions })
       },
       storyPath: { value: "stories/default/story.json" }
     });
@@ -77,6 +78,18 @@ describe("story event history route", () => {
     const history = await directory.getStoryHistory(2, 5);
 
     expect(history.revisions.map((revision) => revision.id)).toEqual([4, 3]);
+    expect(history.revisions[0]).toMatchObject({
+      hasSnapshot: true,
+      diffSummary: { added: 0, removed: 0, modified: 1, total: 1 }
+    });
     expect(history.nextBeforeId).toBe(3);
+    expect(history.commits).toEqual([]);
+    expect(listVersions).not.toHaveBeenCalled();
+
+    await directory.getStoryHistory(2);
+    expect(listVersions).toHaveBeenCalledWith("stories/default/story.json", {
+      page: 1,
+      perPage: 2
+    });
   });
 });

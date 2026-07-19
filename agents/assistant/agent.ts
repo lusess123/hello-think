@@ -741,11 +741,13 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
     const workspace = await this.ensureStoryWorkspace();
     const boundedLimit = Math.min(100, Math.max(1, Math.floor(limit)));
     const [versions, eventPage] = await Promise.all([
-      this.getStoryStore().listVersions(workspace.path, {
-        page: 1,
-        perPage: boundedLimit
-      }),
-      Promise.resolve(this.storyEventPage(boundedLimit, beforeId))
+      beforeId === undefined
+        ? this.getStoryStore().listVersions(workspace.path, {
+            page: 1,
+            perPage: boundedLimit
+          })
+        : Promise.resolve([]),
+      Promise.resolve(this.storyEventSummaryPage(boundedLimit, beforeId))
     ]);
     return {
       current: {
@@ -773,8 +775,8 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
         createdAt: new Date(event.createdAt).toISOString(),
         baseCommitSha: event.baseCommitSha,
         restoredFromSha: event.restoredFromSha,
-        hasSnapshot: event.afterStory !== null,
-        diffSummary: event.diff.business.summary
+        hasSnapshot: event.hasSnapshot,
+        diffSummary: event.diffSummary
       })),
       nextBeforeId: eventPage.nextBeforeId
     };
@@ -788,6 +790,25 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
       events.length === boundedLimit &&
       oldestId !== undefined &&
       this.getStoryStore().listEvents(this.storyPath, 1, oldestId).length > 0;
+    return {
+      events,
+      nextBeforeId: hasMore ? oldestId : undefined
+    };
+  }
+
+  private storyEventSummaryPage(limit: number, beforeId?: number) {
+    const boundedLimit = Math.min(500, Math.max(1, Math.floor(limit)));
+    const events = this.getStoryStore().listEventSummaries(
+      this.storyPath,
+      boundedLimit,
+      beforeId
+    );
+    const oldestId = events.at(-1)?.id;
+    const hasMore =
+      events.length === boundedLimit &&
+      oldestId !== undefined &&
+      this.getStoryStore().listEventSummaries(this.storyPath, 1, oldestId)
+        .length > 0;
     return {
       events,
       nextBeforeId: hasMore ? oldestId : undefined

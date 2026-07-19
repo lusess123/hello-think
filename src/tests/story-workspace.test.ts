@@ -590,6 +590,48 @@ describe("StoryWorkspaceStore", () => {
     expect(result.restored.workingStory.cast[0].identity).toBe("刑警");
   });
 
+  it("lists lightweight event summaries without selecting snapshot payloads", async () => {
+    const result = await inStore(repository(), async (store, storage) => {
+      const initialized = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+      const changed = structuredClone(initialized.workingStory);
+      changed.cast[0].identity = "轻量摘要测试";
+      const updated = store.update({
+        path: initialized.path,
+        expectedRevision: initialized.revision,
+        story: changed,
+        actor: "agent:chat-a",
+        source: "agent",
+        summary: "生成轻量摘要",
+      });
+
+      const exec = vi.spyOn(storage.sql, "exec");
+      const summaries = store.listEventSummaries(updated.path, 1);
+      const query = String(
+        exec.mock.calls.find(([sql]) => String(sql).includes("has_snapshot"))?.[0]
+      );
+      return { summaries, query };
+    });
+
+    expect(result.query).not.toContain("before_story_json");
+    expect(result.query).toContain(
+      "CASE WHEN after_story_json IS NOT NULL THEN 1 ELSE 0 END AS has_snapshot"
+    );
+    expect(result.query).not.toContain("after_story_json,");
+    expect(result.summaries[0]).toMatchObject({
+      revision: 1,
+      summary: "生成轻量摘要",
+      hasSnapshot: true,
+      diffSummary: { added: 0, removed: 0, modified: 1, total: 1 },
+    });
+    expect(result.summaries[0]).not.toHaveProperty("beforeStory");
+    expect(result.summaries[0]).not.toHaveProperty("afterStory");
+  });
+
   it("represents a missing repository file as a reviewable added working copy", async () => {
     const commitFile = vi.fn<StoryRepositoryClient["commitFile"]>(async (input) => ({
       sha: "first-story-commit",
