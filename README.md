@@ -1,7 +1,7 @@
 # Assistant
 
-A showcase of all Project Think features, built with `@cloudflare/think` and
-the sub-agent routing primitive from `agents`.
+A collaborative assistant built with `@cloudflare/think` and the sub-agent
+routing primitive from `agents`.
 
 ## What this demonstrates
 
@@ -15,7 +15,8 @@ the sub-agent routing primitive from `agents`.
   proxy that forwards file I/O to the parent. A `hello.txt` written in chat A
   is visible verbatim in chat B. The proxy swaps in via the `WorkspaceFsLike`
   type exported by `@cloudflare/shell` — no casts; builtin workspace tools
-  AND codemode's `state.*` sandbox API both route through it
+  route through it, as does codemode's optional `state.*` sandbox API when a
+  paid-plan Worker Loader binding is enabled
 - **Shared MCP across chats** — server registry, OAuth credentials, live
   connections, and tool descriptors all live on `AssistantDirectory`. Auth
   to a server once (e.g. GitHub MCP) and every chat sees its tools. Each
@@ -29,16 +30,15 @@ the sub-agent routing primitive from `agents`.
   surfaces it as a `workspaceRevision` counter for `useEffect` deps
 - **Think base class** — `getModel()`, `configureSession()`, `getTools()`, `maxSteps` for a batteries-included agent
 - **Built-in workspace** — file tools (read, write, edit, find, grep, delete) auto-wired on every turn
-- **Sandboxed code execution** — `createExecuteTool` lets the LLM write and run JavaScript in a Dynamic Worker via `@cloudflare/codemode`
-- **Browser automation** — the `BROWSER` binding gives the execute sandbox a `cdp.*` connector: a real browser driven over the Chrome DevTools Protocol, with durable sessions the model can promote and reuse across messages
-- **Stateless browsing (Quick Actions)** — `createQuickActionTools` adds `browser_markdown`, `browser_extract`, `browser_links`, and `browser_scrape` for one-shot page reads (no CDP session or sandbox); the model uses these for simple reads and `cdp.*` for interactive automation
+- **Optional sandboxed code execution** — on paid plans, adding a Worker Loader binding enables `createExecuteTool`, so the LLM can write and run JavaScript in a Dynamic Worker via `@cloudflare/codemode`; the checked-in free-plan deployment leaves this binding disabled
+- **Browser tools** — the `BROWSER` binding always provides stateless Quick Actions; paid-plan deployments with a Worker Loader also get the execute sandbox's interactive `cdp.*` connector
+- **Stateless browsing (Quick Actions)** — `createQuickActionTools` adds `browser_markdown`, `browser_extract`, `browser_links`, and `browser_scrape` for one-shot page reads without a CDP session or Dynamic Worker
 - **HTTP fetch** — the `fetchTools` property registers a read-only `fetch_url` tool; this demo allows any public URL (`http(s)://**`, though private/loopback targets are always refused), and large/binary responses spill into the shared workspace (`spillToWorkspace`) so they show up in the file browser instead of bloating the transcript
-- **Self-authored extensions** — `extensionLoader` + `createExtensionTools` let the agent create new tools at runtime
+- **Optional self-authored extensions** — `extensionLoader` + `createExtensionTools` become available when the deployment supplies a paid-plan Worker Loader binding
 - **Persistent memory** — context blocks (`soul`, `memory`) the model can read and write across sessions
 - **Non-destructive compaction** — older messages summarized when context overflows, originals preserved
 - **Mid-turn overflow recovery** — `contextOverflow` + `classifyChatError` compact and re-run a turn that exceeds the context window mid-flight, instead of failing
 - **Searchable knowledge base** — FTS5-backed `AgentSearchProvider` with `search_context` and `set_context` tools
-- **Agent Skills** — a colocated `workspace-digest` skill (`agents:skills`) the model activates on demand, with a runnable TypeScript `run_skill_script` (`skills.runner`) that inspects the shared workspace via the Worker Loader
 - **Dynamic configuration** — typed `AgentConfig` with model tier and persona, persisted in SQLite
 - **Server-side tools** — `getWeather`, `calculate` execute on the server
 - **Client-side tools** — `getUserTimezone` runs in the browser via `onToolCall`
@@ -172,13 +172,16 @@ class MyAssistant extends Think<Env> {
 
   getTools() {
     return {
-      // The agent one-liner: ctx/loader from the agent, and state.* in the
-      // sandbox hits the shared workspace because SharedWorkspace satisfies
-      // WorkspaceFsLike. tools.* adds the workspace tools (and any
-      // needsApproval tools pause durably for the approval card).
-      execute: createExecuteTool(this, {
-        tools: createWorkspaceTools(this.workspace)
-      })
+      // Optional on paid plans: when env.LOADER exists, state.* in the
+      // execute sandbox hits the shared workspace because SharedWorkspace
+      // satisfies WorkspaceFsLike.
+      ...(getWorkerLoader(this.env)
+        ? {
+            execute: createExecuteTool(this, {
+              tools: createWorkspaceTools(this.workspace)
+            })
+          }
+        : {})
       // ...
     };
   }
@@ -203,7 +206,8 @@ That one type annotation unlocks two things at once:
 - **All of Think's workspace-aware machinery** (`createWorkspaceTools`,
   lifecycle hooks, the builtin `listWorkspaceFiles` /
   `readWorkspaceFile` RPCs) works unchanged against the proxy.
-- **Codemode's `state.*` sandbox API** works too, via
+- **Codemode's optional `state.*` sandbox API** works too when a paid-plan
+  Worker Loader is bound, via
   `createWorkspaceStateBackend(this.workspace)`. Multi-file operations
   like `state.planEdits` and `state.applyEdits` run against the shared
   workspace, so a plan composed in one chat can mutate files another
@@ -433,7 +437,7 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
 
 export class MyAssistant extends Think<Env> {
   chatRecovery = true;
-  extensionLoader = this.env.LOADER;
+  extensionLoader = getWorkerLoader(this.env); // optional paid-plan binding
 
   getModel() {
     /* model tier from config */
@@ -442,7 +446,7 @@ export class MyAssistant extends Think<Env> {
     /* persona, memory, compaction, knowledge */
   }
   getTools() {
-    /* execute, extensions, quick-action browser tools, getWeather, calculate, ... */
+    /* optional execute/extensions, plus quick-action browser tools and app tools */
   }
 
   // Each turn updates the parent's sidebar preview via the

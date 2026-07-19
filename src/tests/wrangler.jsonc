@@ -31,7 +31,6 @@
       }
     ]
   },
-  "worker_loaders": [{ "binding": "LOADER" }],
   "main": "worker.ts",
   "migrations": [
     {

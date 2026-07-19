@@ -5,7 +5,6 @@
 // untyped Wrangler declaration with Think's generated namespace.
 declare namespace Cloudflare {
   interface Env {
-    LOADER: WorkerLoader;
     BROWSER: BrowserRun;
     R2: R2Bucket;
     DOCUMENT_INGEST_WORKFLOW: Workflow;
