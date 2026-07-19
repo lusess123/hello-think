@@ -1,140 +1,116 @@
 /**
- * Assistant — app server entry.
+ * Assistant API server entry.
  *
- * The agent architecture lives under `agents/assistant`. This Worker
- * entry owns only the GitHub OAuth flow and the authenticated `/chat*`
- * gate that forwards each user to their `AssistantDirectory`.
+ * HTTP routes run through Hono. Authenticated WebSocket upgrades intentionally
+ * stay outside Hono so no after-middleware can wrap or mutate the `101`
+ * response returned by Think.
  */
 
-import { getAgentByName } from "agents";
+import { isStoryUserAllowed } from "./access-control";
+import { httpApp } from "./http/app";
+import type { HttpBindings } from "./http/app";
+import { routeAuthenticatedChat } from "./http/chat-routing";
+import type { ThinkAppContext } from "./http/chat-routing";
 import {
-  createUnauthorizedResponse,
-  getGitHubUserFromRequest,
-  handleGitHubCallback,
-  handleGitHubLogin,
-  handleLogout
-} from "./auth";
-import type { GitHubUser } from "./auth";
-import type { AssistantDirectory } from "../agents/assistant/agent";
-import { isStoryUserAllowed, storyDirectoryName } from "./access-control";
-
-/**
- * Local-dev escape hatch. Even if the Wrangler var is present in a deployed
- * configuration, it is ignored unless the request hostname is loopback.
- */
-function getDevUser(request: Request, env: Env): GitHubUser | null {
-  if (!env.DEV_USER) return null;
-  const hostname = new URL(request.url).hostname;
-  if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "[::1]") {
-    return null;
-  }
-  return { id: 0, login: env.DEV_USER, name: env.DEV_USER, avatarUrl: "" };
-}
-
-type ThinkAppContext = {
-  router: {
-    routeSubAgent(
-      request: Request,
-      parent: { fetch(request: Request): Promise<Response> },
-      options: { parent: string }
-    ): Promise<Response>;
-  };
-};
-
-function createJsonResponse(body: unknown, init?: ResponseInit) {
-  const headers = new Headers(init?.headers);
-  headers.set("Cache-Control", "no-store");
-  return Response.json(body, { ...init, headers });
-}
-
-function createForbiddenResponse() {
-  return createJsonResponse(
-    { error: "当前 GitHub 用户没有这个剧本仓库的编辑权限" },
-    { status: 403 }
-  );
-}
+  canonicalApiOrigin,
+  isAllowedFrontendOrigin,
+  isWebSocketUpgrade
+} from "./http/origins";
+import {
+  verifyWebSocketToken,
+  WS_TOKEN_QUERY_PARAM
+} from "./http/ws-token";
 
 export default {
   async fetch(
     request: Request,
     env: Env,
-    _ctx: ExecutionContext,
+    ctx: ExecutionContext,
     think?: ThinkAppContext
   ) {
     const url = new URL(request.url);
-
-    try {
-      if (url.pathname === "/auth/login") {
-        return handleGitHubLogin(request, env);
-      }
-
-      if (url.pathname === "/auth/callback") {
-        return await handleGitHubCallback(request, env);
-      }
-
-      if (url.pathname === "/auth/logout") {
-        if (request.method !== "POST") {
-          return new Response("Method not allowed", { status: 405 });
-        }
-        return handleLogout(request);
-      }
-
-      if (url.pathname === "/auth/me") {
-        const devUser = getDevUser(request, env);
-        const user = devUser ?? (await getGitHubUserFromRequest(request));
-        if (!user) {
-          return createUnauthorizedResponse(request);
-        }
-        if (!isStoryUserAllowed(user, env.STORY_ALLOWED_GITHUB_USERS, Boolean(devUser))) {
-          return createForbiddenResponse();
-        }
-        return createJsonResponse(user);
-      }
-
-      // User-scoped chat routing. The Worker, not the browser, decides
-      // which AssistantDirectory DO owns this user's chats. Everything
-      // below `/chat` (including sub-agent routing to a specific
-      // `MyAssistant` facet) is handled by the directory's built-in
-      // `Agent.fetch()` + sub-routing logic.
-      if (url.pathname === "/chat" || url.pathname.startsWith("/chat/")) {
-        const devUser = getDevUser(request, env);
-        const user = devUser ?? (await getGitHubUserFromRequest(request));
-        if (!user) {
-          return createUnauthorizedResponse(request);
-        }
-        if (!isStoryUserAllowed(user, env.STORY_ALLOWED_GITHUB_USERS, Boolean(devUser))) {
-          return createForbiddenResponse();
-        }
-
-        if (!think?.router) {
-          return new Response(
-            "Assistant chat routing requires the Think generated Worker entry. " +
-              'Make sure the configured Worker main re-exports "virtual:think/entry", ' +
-              "rebuild @cloudflare/think after framework changes, and restart the dev server.",
-            { status: 500 }
-          );
-        }
-
-        const directory = await getAgentByName(
-          env.AssistantDirectory as DurableObjectNamespace<AssistantDirectory>,
-          storyDirectoryName(user, Boolean(devUser))
-        );
-        await directory.registerAuthenticatedUser({ id: user.id, login: user.login });
-        return think.router.routeSubAgent(request, directory, {
-          parent: "assistant"
-        });
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unexpected auth error";
-      return createJsonResponse({ error: message }, { status: 500 });
+    if (
+      (url.pathname === "/chat" || url.pathname.startsWith("/chat/")) &&
+      isWebSocketUpgrade(request)
+    ) {
+      return handleWebSocketUpgrade(request, env, think);
     }
 
-    // Any other path is intentionally unhandled. We do NOT fall back
-    // to `routeAgentRequest` — that would let a client reach
-    // `/agents/assistant-directory/<login>` or
-    // `/agents/my-assistant/<chatId>` without going through the
-    // GitHub-authenticated `/chat*` gate.
-    return new Response("Not found", { status: 404 });
+    // Think supplies its router as a fourth, request-scoped argument. Passing
+    // it through the Hono bindings keeps concurrent requests isolated.
+    const requestEnv: HttpBindings = { ...env, THINK_RUNTIME: think };
+    return httpApp.fetch(request, requestEnv, ctx);
   }
 };
+
+export async function handleWebSocketUpgrade(
+  request: Request,
+  env: Env,
+  think: ThinkAppContext | undefined
+): Promise<Response> {
+  let apiOrigin: string;
+  const frontendOrigin = request.headers.get("Origin");
+  try {
+    apiOrigin = canonicalApiOrigin(request, env);
+    if (
+      !frontendOrigin ||
+      !isAllowedFrontendOrigin(frontendOrigin, request, env)
+    ) {
+      return forbiddenOrigin();
+    }
+  } catch {
+    return forbiddenOrigin();
+  }
+
+  const url = new URL(request.url);
+  const token = url.searchParams.get(WS_TOKEN_QUERY_PARAM);
+  if (!token) return unauthorizedWebSocket();
+
+  let identity;
+  try {
+    identity = await verifyWebSocketToken({
+      token,
+      frontendOrigin,
+      apiOrigin,
+      env
+    });
+  } catch {
+    return unauthorizedWebSocket();
+  }
+  if (!identity) return unauthorizedWebSocket();
+  if (
+    !isStoryUserAllowed(
+      identity.user,
+      env.STORY_ALLOWED_GITHUB_USERS,
+      identity.isDevUser
+    )
+  ) {
+    return new Response("Forbidden", { status: 403 });
+  }
+
+  // Keep PartySocket parameters such as `_pk`, but never forward the bearer
+  // token into Think, Durable Object logs, or stored request state.
+  url.searchParams.delete(WS_TOKEN_QUERY_PARAM);
+  const sanitizedRequest = new Request(url, request);
+  return routeAuthenticatedChat({
+    request: sanitizedRequest,
+    env,
+    think,
+    user: identity.user,
+    isDevUser: identity.isDevUser
+  });
+}
+
+function forbiddenOrigin() {
+  return new Response("Forbidden", {
+    status: 403,
+    headers: { "Cache-Control": "no-store" }
+  });
+}
+
+function unauthorizedWebSocket() {
+  return new Response("Unauthorized", {
+    status: 401,
+    headers: { "Cache-Control": "no-store" }
+  });
+}

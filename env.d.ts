@@ -10,6 +10,9 @@ declare namespace Cloudflare {
     DOCUMENT_INGEST_WORKFLOW: Workflow;
     GITHUB_CLIENT_ID: string;
     GITHUB_CLIENT_SECRET: string;
+    WS_TOKEN_SECRET: string;
+    API_ORIGIN: string;
+    FRONTEND_ORIGIN: string;
     DEV_USER: string;
     AI_GATEWAY_BASE_URL: string;
     AI_GATEWAY_TOKEN: string;
@@ -32,6 +35,7 @@ declare namespace NodeJS {
   interface ProcessEnv {
     GITHUB_CLIENT_ID: string;
     GITHUB_CLIENT_SECRET: string;
+    WS_TOKEN_SECRET: string;
     STORY_GITHUB_PRIVATE_KEY: string;
   }
 }

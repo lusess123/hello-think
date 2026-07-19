@@ -5,6 +5,7 @@ import type {
   PendingAttachment
 } from "@assistant-ui/react";
 import type { DocumentRecord } from "../../agents/assistant/document-library";
+import { apiFetch, apiUrl } from "../api-client";
 
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
@@ -144,7 +145,7 @@ export class DocumentAttachmentAdapter implements AttachmentAdapter {
   async remove(attachment: Attachment): Promise<void> {
     const uploaded = this.uploads.get(attachment.id);
     if (!uploaded) return;
-    const response = await fetch(
+    const response = await apiFetch(
       `/chat/documents/${encodeURIComponent(uploaded.document.id)}`,
       { method: "DELETE" }
     );
@@ -171,7 +172,8 @@ function uploadDocument(
 ): Promise<UploadedDocument> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/chat/documents");
+    xhr.open("POST", apiUrl("/chat/documents"));
+    xhr.withCredentials = true;
     xhr.responseType = "json";
     xhr.setRequestHeader(
       "Content-Type",
@@ -189,7 +191,7 @@ function uploadDocument(
         | null;
       if (xhr.status >= 200 && xhr.status < 300 && body && "document" in body) {
         onProgress(1);
-        resolve(body);
+        resolve({ ...body, contentUrl: apiUrl(body.contentUrl) });
         return;
       }
       reject(

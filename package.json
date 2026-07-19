@@ -10,7 +10,9 @@
   "scripts": {
     "start": "node scripts/start-local.mjs",
     "build": "node scripts/build.mjs",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy:dry-run": "npm run build && npm run deploy:dry-run:api && npm run deploy:dry-run:frontend",
+    "deploy:dry-run:api": "wrangler deploy --config dist/hello_think/wrangler.api.json --dry-run",
+    "deploy:dry-run:frontend": "wrangler deploy --config wrangler.frontend.jsonc --dry-run",
     "test": "vitest --run --config src/tests/vitest.config.ts",
     "types": "think types"
   },
@@ -28,6 +30,7 @@
     "@tanstack/react-virtual": "3.14.6",
     "agents": "*",
     "ai": "^6.0.202",
+    "hono": "4.12.30",
     "nanoid": "^5.1.16",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

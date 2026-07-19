@@ -1,3 +1,9 @@
+import {
+  canonicalApiOrigin,
+  canonicalFrontendOrigin,
+  isLoopbackRequest
+} from "./http/origins";
+
 const GITHUB_STATE_COOKIE = "gh_oauth_state";
 const GITHUB_TOKEN_COOKIE = "gh_access_token";
 const GITHUB_SCOPE = "read:user";
@@ -33,6 +39,10 @@ function getGitHubConfig(env: Env) {
 
 function shouldUseSecureCookies(request: Request) {
   return new URL(request.url).protocol === "https:";
+}
+
+function cookieName(name: string, request: Request) {
+  return shouldUseSecureCookies(request) ? `__Host-${name}` : name;
 }
 
 function buildCookie(name: string, value: string, options: CookieOptions = {}) {
@@ -78,16 +88,15 @@ function createNoStoreHeaders(headers?: HeadersInit) {
   return result;
 }
 
-function getRedirectUri(request: Request) {
-  const url = new URL(request.url);
-  return `${url.origin}/auth/callback`;
+function getRedirectUri(request: Request, env: Env) {
+  return `${canonicalApiOrigin(request, env)}/auth/callback`;
 }
 
 function getAuthorizeUrl(request: Request, env: Env, state: string) {
   const { clientId } = getGitHubConfig(env);
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", clientId);
-  url.searchParams.set("redirect_uri", getRedirectUri(request));
+  url.searchParams.set("redirect_uri", getRedirectUri(request, env));
   url.searchParams.set("scope", GITHUB_SCOPE);
   url.searchParams.set("state", state);
   return url.toString();
@@ -120,7 +129,7 @@ async function exchangeCodeForToken(request: Request, env: Env, code: string) {
       client_id: clientId,
       client_secret: clientSecret,
       code,
-      redirect_uri: getRedirectUri(request)
+      redirect_uri: getRedirectUri(request, env)
     })
   });
 
@@ -179,14 +188,14 @@ async function fetchGitHubUser(token: string): Promise<GitHubUser | null> {
 
 export function createUnauthorizedResponse(request: Request) {
   const headers = createNoStoreHeaders();
-  headers.append("Set-Cookie", clearCookie(GITHUB_TOKEN_COOKIE, request));
+  appendClearedCookie(headers, GITHUB_TOKEN_COOKIE, request);
   return new Response("Unauthorized", { status: 401, headers });
 }
 
 export async function getGitHubUserFromRequest(
   request: Request
 ): Promise<GitHubUser | null> {
-  const token = getCookie(request, GITHUB_TOKEN_COOKIE);
+  const token = getCookie(request, cookieName(GITHUB_TOKEN_COOKIE, request));
   if (!token) return null;
   return fetchGitHubUser(token);
 }
@@ -199,7 +208,7 @@ export function handleGitHubLogin(request: Request, env: Env) {
 
   headers.append(
     "Set-Cookie",
-    buildCookie(GITHUB_STATE_COOKIE, state, {
+    buildCookie(cookieName(GITHUB_STATE_COOKIE, request), state, {
       httpOnly: true,
       maxAge: 600,
       secure: shouldUseSecureCookies(request)
@@ -213,11 +222,14 @@ export async function handleGitHubCallback(request: Request, env: Env) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const returnedState = url.searchParams.get("state");
-  const expectedState = getCookie(request, GITHUB_STATE_COOKIE);
+  const expectedState = getCookie(
+    request,
+    cookieName(GITHUB_STATE_COOKIE, request)
+  );
   const oauthError = url.searchParams.get("error");
 
   const headers = createNoStoreHeaders();
-  headers.append("Set-Cookie", clearCookie(GITHUB_STATE_COOKIE, request));
+  appendClearedCookie(headers, GITHUB_STATE_COOKIE, request);
 
   if (oauthError) {
     return new Response(`GitHub OAuth failed: ${oauthError}`, {
@@ -243,10 +255,10 @@ export async function handleGitHubCallback(request: Request, env: Env) {
     });
   }
 
-  headers.set("Location", "/");
+  headers.set("Location", `${canonicalFrontendOrigin(request, env)}/`);
   headers.append(
     "Set-Cookie",
-    buildCookie(GITHUB_TOKEN_COOKIE, token, {
+    buildCookie(cookieName(GITHUB_TOKEN_COOKIE, request), token, {
       httpOnly: true,
       secure: shouldUseSecureCookies(request)
     })
@@ -257,7 +269,31 @@ export async function handleGitHubCallback(request: Request, env: Env) {
 
 export function handleLogout(request: Request) {
   const headers = createNoStoreHeaders();
-  headers.append("Set-Cookie", clearCookie(GITHUB_STATE_COOKIE, request));
-  headers.append("Set-Cookie", clearCookie(GITHUB_TOKEN_COOKIE, request));
+  appendClearedCookie(headers, GITHUB_STATE_COOKIE, request);
+  appendClearedCookie(headers, GITHUB_TOKEN_COOKIE, request);
   return new Response(null, { status: 204, headers });
+}
+
+/** Local-only auth bypass used by the integrated Vite/Wrangler server. */
+export function getDevUser(request: Request, env: Env): GitHubUser | null {
+  if (!env.DEV_USER || !isLoopbackRequest(request)) return null;
+  return {
+    id: 0,
+    login: env.DEV_USER,
+    name: env.DEV_USER,
+    avatarUrl: ""
+  };
+}
+
+function appendClearedCookie(
+  headers: Headers,
+  baseName: string,
+  request: Request
+) {
+  const activeName = cookieName(baseName, request);
+  headers.append("Set-Cookie", clearCookie(activeName, request));
+  // Remove cookies created before the production `__Host-` migration too.
+  if (activeName !== baseName) {
+    headers.append("Set-Cookie", clearCookie(baseName, request));
+  }
 }

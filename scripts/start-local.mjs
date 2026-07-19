@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,7 +38,10 @@ const child = spawn(process.execPath, [viteBin, "dev", ...process.argv.slice(2)]
     // `wrangler.jsonc#secrets.required` is the allowlist that decides which
     // process variables enter the Worker. Never enable the legacy all-env
     // forwarding flag here: shells often contain unrelated credentials.
-    STORY_GITHUB_PRIVATE_KEY: privateKey
+    STORY_GITHUB_PRIVATE_KEY: privateKey,
+    // Local WebSocket bearer tokens still use the production HMAC path, but
+    // the key is new for every `npm start` process and never touches disk.
+    WS_TOKEN_SECRET: randomBytes(32).toString("base64url")
   },
   stdio: "inherit"
 });

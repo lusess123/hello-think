@@ -21,12 +21,14 @@
 import "./styles.css";
 import { createRoot } from "react-dom/client";
 import {
+  Component,
   Suspense,
   useCallback,
   useState,
   useEffect,
   useRef,
   useMemo,
+  type ErrorInfo,
   type ReactNode,
   type Ref
 } from "react";
@@ -80,6 +82,7 @@ import {
   startGitHubLogin,
   type AuthUser
 } from "./auth-client";
+import { agentConnectionOptions } from "./api-client";
 import { useChats } from "./use-chats";
 import type { ChatSummary } from "../agents/assistant/types";
 import { ThinkRuntimeProvider } from "./chat/think-runtime";
@@ -345,6 +348,7 @@ function Chat({
   );
 
   const agent = useAgent({
+    ...agentConnectionOptions,
     // This chat lives as a facet of the user's AssistantDirectory. The
     // `sub` option builds the nested URL tail `/sub/my-assistant/:chatId`.
     // The parent's `onBeforeSubAgent` strict-registry gate runs once on
@@ -1366,6 +1370,75 @@ function SignInView({ error }: { error: string | null }) {
   );
 }
 
+type ChatConnectionBoundaryProps = {
+  children: ReactNode;
+  onReauthenticate: () => void;
+};
+
+type ChatConnectionBoundaryState = {
+  error: Error | null;
+};
+
+class ChatConnectionBoundary extends Component<
+  ChatConnectionBoundaryProps,
+  ChatConnectionBoundaryState
+> {
+  state: ChatConnectionBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: unknown): ChatConnectionBoundaryState {
+    return {
+      error: error instanceof Error ? error : new Error(String(error))
+    };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Failed to establish the authenticated chat connection", {
+      error,
+      componentStack: info.componentStack
+    });
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+
+    return (
+      <AuthShell>
+        <Surface className="px-10 py-12 rounded-2xl ring ring-kumo-line">
+          <Text variant="heading1" as="h1">
+            聊天连接失败
+          </Text>
+          <div className="mt-4">
+            <Banner variant="error">
+              暂时无法连接 Agent。可能是登录已过期或网络短暂中断。
+            </Banner>
+          </div>
+          <span className="mt-3 block">
+            <Text size="xs" variant="secondary">
+              {this.state.error.message}
+            </Text>
+          </span>
+          <div className="mt-8 flex gap-3">
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={() => this.setState({ error: null })}
+            >
+              重试连接
+            </Button>
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={this.props.onReauthenticate}
+            >
+              重新登录
+            </Button>
+          </div>
+        </Surface>
+      </AuthShell>
+    );
+  }
+}
+
 // ── Sidebar (chat list + new-chat action) ──────────────────────────────
 
 function ChatSidebar({
@@ -1916,13 +1989,17 @@ function AuthenticatedApp() {
 
   if (user) {
     return (
-      <MultiChatApp
-        user={user}
-        onSignOut={() => {
-          setUser(null);
-          setError(null);
-        }}
-      />
+      <ChatConnectionBoundary onReauthenticate={startGitHubLogin}>
+        <Suspense fallback={<LoadingView message="Authenticating chat…" />}>
+          <MultiChatApp
+            user={user}
+            onSignOut={() => {
+              setUser(null);
+              setError(null);
+            }}
+          />
+        </Suspense>
+      </ChatConnectionBoundary>
     );
   }
 

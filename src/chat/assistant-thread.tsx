@@ -44,6 +44,7 @@ import {
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import { Badge, Button, Empty, Surface, Text } from "@cloudflare/kumo";
+import { apiFetch, apiUrl } from "../api-client";
 import { VirtualList } from "../components/virtual-list";
 import type { DocumentAttachmentData } from "./document-attachment-adapter";
 
@@ -499,7 +500,7 @@ function DocumentDataPart({ data }: { data: DocumentAttachmentData }) {
   const [status, setStatus] = useState(data.status);
   useEffect(() => {
     let active = true;
-    void fetch(`/chat/documents/${encodeURIComponent(data.documentId)}`)
+    void apiFetch(`/chat/documents/${encodeURIComponent(data.documentId)}`)
       .then(async (response) => {
         if (!response.ok) return;
         const body = (await response.json()) as {
@@ -521,7 +522,7 @@ function DocumentDataPart({ data }: { data: DocumentAttachmentData }) {
         : FileTextIcon;
   return (
     <a
-      href={data.contentUrl}
+      href={apiUrl(data.contentUrl)}
       target="_blank"
       rel="noreferrer"
       className="flex items-center gap-2 rounded-lg border border-white/20 bg-black/10 px-3 py-2 text-xs"
