@@ -16,6 +16,7 @@ import {
 } from "./api";
 import type {
   MysteryStoryDsl,
+  StoryLayout,
   StoryPullRequest,
   StoryVersion,
   StoryWorkspace,
@@ -39,7 +40,12 @@ export type StoryRestoreRequest =
     };
 
 type HistorySelection =
-  | { kind: "commit"; version: StoryVersion; story: MysteryStoryDsl }
+  | {
+      kind: "commit";
+      version: StoryVersion;
+      story: MysteryStoryDsl;
+      layout: StoryLayout;
+    }
   | { kind: "event"; event: StoryWorkspaceEvent };
 
 export function HistoryView({
@@ -177,6 +183,11 @@ export function HistoryView({
     selection?.kind === "commit"
       ? selection.story
       : selection?.event.afterStory ?? selection?.event.beforeStory;
+  const selectedLayout =
+    selection?.kind === "commit"
+      ? selection.layout
+      : selection?.event.afterLayout ?? selection?.event.beforeLayout;
+  const snapshotEntries = historySnapshotEntries(selectedStory, selectedLayout);
 
   return (
     <div className="story-history-layout h-full min-h-0 overflow-auto">
@@ -211,17 +222,17 @@ export function HistoryView({
             return (
               <button
                 type="button"
-                className={`grid w-full grid-cols-[1rem_minmax(0,1fr)_auto] gap-2 border-b border-kumo-line px-2 py-2 text-left hover:bg-kumo-hover ${active ? "bg-kumo-tint" : "bg-kumo-base"}`}
+                className={`grid w-full grid-cols-[1rem_minmax(0,1fr)_auto] gap-2 border-b border-kumo-line px-2 py-2 text-left hover:bg-kumo-fill-hover ${active ? "bg-kumo-tint" : "bg-kumo-base"}`}
                 onClick={() => void viewVersion(version)}
               >
-                <span className={`mt-1 size-2 rounded-full border ${current ? "border-kumo-accent bg-kumo-accent" : "border-kumo-line bg-kumo-base"}`} />
+                <span className={`mt-1 size-2 rounded-full border ${current ? "border-kumo-brand bg-kumo-brand" : "border-kumo-line bg-kumo-base"}`} />
                 <span className="min-w-0">
                   <span className="block truncate text-[11px] font-medium text-kumo-default">{version.message}</span>
                   <span className="mt-1 block truncate font-mono text-[9px] text-kumo-subtle">
                     {version.author ?? "unknown"} · {formatDate(version.committedAt ?? version.createdAt)}
                   </span>
                 </span>
-                <span className="flex items-center gap-1 font-mono text-[9px] text-kumo-accent">
+                <span className="flex items-center gap-1 font-mono text-[9px] text-kumo-brand">
                   {viewingSha === version.sha && <SpinnerGapIcon size={10} className="animate-spin" />}
                   {version.shortSha ?? shortSha(version.sha)}
                 </span>
@@ -233,7 +244,7 @@ export function HistoryView({
           <button
             type="button"
             disabled={loadingMore}
-            className="shrink-0 border-t border-kumo-line bg-kumo-elevated py-2 font-mono text-[10px] text-kumo-accent hover:bg-kumo-hover disabled:opacity-40"
+            className="shrink-0 border-t border-kumo-line bg-kumo-elevated py-2 font-mono text-[10px] text-kumo-brand hover:bg-kumo-fill-hover disabled:opacity-40"
             onClick={() => void loadMore()}
           >
             {loadingMore ? "正在加载…" : "加载更早版本"}
@@ -254,10 +265,11 @@ export function HistoryView({
           emptyState={<StoryEmpty label={loading ? "正在读取工作区留痕…" : "暂无工作区事件"} />}
           renderItem={(event) => {
             const active = selection?.kind === "event" && selection.event.id === event.id;
+            const diffTotal = eventDiffTotal(event);
             return (
               <button
                 type="button"
-                className={`w-full border-b border-kumo-line px-2 py-2 text-left hover:bg-kumo-hover ${active ? "bg-kumo-tint" : "bg-kumo-base"}`}
+                className={`w-full border-b border-kumo-line px-2 py-2 text-left hover:bg-kumo-fill-hover ${active ? "bg-kumo-tint" : "bg-kumo-base"}`}
                 onClick={() => {
                   versionSequence.current += 1;
                   setViewingSha(null);
@@ -269,7 +281,10 @@ export function HistoryView({
                   <span className="truncate text-[11px] font-medium text-kumo-default">
                     {event.summary || eventKindLabel(event.kind)}
                   </span>
-                  <span className="ml-auto shrink-0 font-mono text-[9px] text-kumo-inactive">
+                  <span className="shrink-0 font-mono text-[9px] text-kumo-subtle">
+                    {diffTotal} 项
+                  </span>
+                  <span className="ml-auto shrink-0 font-mono text-[9px] text-kumo-subtle">
                     {formatDate(event.createdAt)}
                   </span>
                 </span>
@@ -287,7 +302,7 @@ export function HistoryView({
           <button
             type="button"
             disabled={loadingMoreEvents}
-            className="shrink-0 border-t border-kumo-line bg-kumo-elevated py-2 font-mono text-[10px] text-kumo-accent hover:bg-kumo-hover disabled:opacity-40"
+            className="shrink-0 border-t border-kumo-line bg-kumo-elevated py-2 font-mono text-[10px] text-kumo-brand hover:bg-kumo-fill-hover disabled:opacity-40"
             onClick={() => void loadMoreEvents()}
           >
             {loadingMoreEvents ? "正在加载…" : "加载更早 revision"}
@@ -303,12 +318,21 @@ export function HistoryView({
         {selection ? (
           <>
             <div className="min-h-40 flex-1 overflow-auto bg-kumo-elevated p-3">
-              {selectedStory ? (
-                <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-kumo-subtle">
-                  {JSON.stringify(selectedStory, null, 2)}
-                </pre>
+              {snapshotEntries.length > 0 ? (
+                <div className="space-y-3">
+                  {snapshotEntries.map((entry) => (
+                    <section key={entry.id} className="overflow-hidden rounded-md border border-kumo-line bg-kumo-base">
+                      <div className="border-b border-kumo-line bg-kumo-elevated px-2 py-1 font-mono text-[9px] font-semibold text-kumo-default">
+                        {entry.label}
+                      </div>
+                      <pre className="m-0 whitespace-pre-wrap break-words p-2 font-mono text-[10px] leading-4 text-kumo-subtle">
+                        {JSON.stringify(entry.value, null, 2)}
+                      </pre>
+                    </section>
+                  ))}
+                </div>
               ) : (
-                <div className="flex h-full items-center justify-center font-mono text-[10px] text-kumo-inactive">
+                <div className="flex h-full items-center justify-center font-mono text-[10px] text-kumo-subtle">
                   该旧事件没有保存快照；仍可查看 actor、summary 与 Diff 统计
                 </div>
               )}
@@ -344,7 +368,7 @@ export function HistoryView({
             </div>
           </>
         ) : (
-          <div className="flex min-h-52 flex-1 items-center justify-center font-mono text-[10px] text-kumo-inactive">
+          <div className="flex min-h-52 flex-1 items-center justify-center font-mono text-[10px] text-kumo-subtle">
             从 Git commit 或工作区 revision 选择一个版本
           </div>
         )}
@@ -395,12 +419,28 @@ function eventKindLabel(kind: StoryWorkspaceEvent["kind"]): string {
   }[kind];
 }
 
-function eventDiffTotal(event: StoryWorkspaceEvent): number {
-  const diff = event.diff as unknown as {
-    items?: unknown[];
-    business?: { summary?: { total?: number } };
-  } | undefined;
-  return diff?.items?.length ?? diff?.business?.summary?.total ?? 0;
+export function eventDiffTotal(event: StoryWorkspaceEvent): number {
+  const storyTotal =
+    event.diff?.items?.length ?? event.diff?.business?.summary?.total ?? 0;
+  return storyTotal + (event.diff?.layout?.length ?? 0);
+}
+
+export function historySnapshotEntries(
+  story: MysteryStoryDsl | null | undefined,
+  layout: StoryLayout | null | undefined
+): Array<{ id: "story" | "layout"; label: string; value: unknown }> {
+  return [
+    ...(story
+      ? [{ id: "story" as const, label: "story.json", value: story }]
+      : []),
+    ...(layout
+      ? [{
+          id: "layout" as const,
+          label: `story.layout.json · ${Object.keys(layout.nodes).length} 个定位`,
+          value: layout
+        }]
+      : [])
+  ];
 }
 
 function shortSha(sha: string): string {

@@ -779,7 +779,7 @@ function Chat({
                       <div className="flex items-center gap-2">
                         <PlugsConnectedIcon
                           size={16}
-                          className="text-kumo-accent"
+                          className="text-kumo-brand"
                         />
                         <Text size="sm" bold>
                           MCP Servers
@@ -813,7 +813,7 @@ function Chat({
                         value={mcpName}
                         onChange={(e) => setMcpName(e.target.value)}
                         placeholder="Server name"
-                        className="w-full px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-accent"
+                        className="w-full px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-focus"
                       />
                       <div className="flex gap-2">
                         <input
@@ -822,7 +822,7 @@ function Chat({
                           value={mcpUrl}
                           onChange={(e) => setMcpUrl(e.target.value)}
                           placeholder="https://mcp.example.com"
-                          className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-accent font-mono"
+                          className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-focus font-mono"
                         />
                         <Button
                           type="submit"
@@ -941,7 +941,7 @@ function Chat({
                       <div className="flex items-center gap-2">
                         <FolderOpenIcon
                           size={16}
-                          className="text-kumo-accent"
+                          className="text-kumo-brand"
                         />
                         <Text size="sm" bold>
                           Workspace
@@ -990,7 +990,7 @@ function Chat({
                           }
                           renderItem={(line, index) => (
                             <div className="grid min-w-max grid-cols-[3rem_1fr] leading-5">
-                              <span className="select-none pr-3 text-right text-kumo-inactive">
+                              <span className="select-none pr-3 text-right text-kumo-subtle">
                                 {index + 1}
                               </span>
                               <code className="whitespace-pre pr-3 text-kumo-default">
@@ -1038,7 +1038,7 @@ function Chat({
                               {f.name}
                             </span>
                             {f.size != null && (
-                              <span className="text-xs text-kumo-inactive ml-auto">
+                              <span className="text-xs text-kumo-subtle ml-auto">
                                 {f.size}b
                               </span>
                             )}
@@ -1068,7 +1068,7 @@ function Chat({
                       <div className="flex items-center gap-2">
                         <PuzzlePieceIcon
                           size={16}
-                          className="text-kumo-accent"
+                          className="text-kumo-brand"
                         />
                         <Text size="sm" bold>
                           Extensions
@@ -1137,7 +1137,7 @@ function Chat({
                       <div className="flex items-center gap-2">
                         <SlidersHorizontalIcon
                           size={16}
-                          className="text-kumo-accent"
+                          className="text-kumo-brand"
                         />
                         <Text size="sm" bold>
                           Configuration
@@ -1193,7 +1193,7 @@ function Chat({
                         </label>
                         <textarea
                           aria-label="You are a helpful assistant"
-                          className="w-full px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-accent resize-none"
+                          className="w-full px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-focus resize-none"
                           rows={3}
                           placeholder="You are a helpful assistant..."
                           value={agentConfig?.persona ?? ""}
@@ -1327,7 +1327,7 @@ function SignInView({ error }: { error: string | null }) {
             <InfoIcon
               size={20}
               weight="bold"
-              className="text-kumo-accent shrink-0 mt-0.5"
+              className="text-kumo-brand shrink-0 mt-0.5"
             />
             <div>
               <Text size="sm" bold>
@@ -1335,9 +1335,9 @@ function SignInView({ error }: { error: string | null }) {
               </Text>
               <span className="mt-1 block">
                 <Text size="xs" variant="secondary">
-                  Create a GitHub OAuth App and add `GITHUB_CLIENT_ID` plus
-                  `GITHUB_CLIENT_SECRET` to `.env`. The README walks through the
-                  exact callback URL to use for local development.
+                  Configure the GitHub App client ID and client secret for user
+                  authorization. The README lists the callback URL and local
+                  development setup.
                 </Text>
               </span>
             </div>
@@ -1456,7 +1456,7 @@ function ChatSidebar({
           itemClassName="px-1"
           emptyState={
             <div className="p-4 flex flex-col items-center text-center gap-2">
-              <ChatsIcon size={24} className="text-kumo-inactive" />
+              <ChatsIcon size={24} className="text-kumo-subtle" />
               <Text size="xs" variant="secondary">
                 No chats yet. Click <strong>New chat</strong> to start one.
               </Text>
@@ -1470,7 +1470,7 @@ function ChatSidebar({
                     aria-label={`Select chat ${chat.title}`}
                     type="button"
                     className={`w-full flex items-start gap-1 px-2 py-2 rounded-md text-left ${
-                      isActive ? "bg-kumo-hover" : "hover:bg-kumo-hover/60"
+                      isActive ? "bg-kumo-fill-hover" : "hover:bg-kumo-fill-hover/60"
                     }`}
                     onClick={() => onSelect(chat.id)}
                     aria-current={isActive ? "true" : undefined}
@@ -1514,7 +1514,7 @@ function ChatSidebar({
 
       <div className="px-3 py-3 border-t border-kumo-line flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <GithubLogoIcon size={14} className="text-kumo-inactive shrink-0" />
+          <GithubLogoIcon size={14} className="text-kumo-subtle shrink-0" />
           <Text size="xs" variant="secondary">
             <span className="truncate block">{displayName}</span>
           </Text>

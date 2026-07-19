@@ -55,13 +55,16 @@ the sub-agent routing primitive from `agents`.
 
 ## How to run
 
-### 1. Create a GitHub OAuth App
+### 1. Configure GitHub App OAuth
 
-Go to [GitHub OAuth Apps](https://github.com/settings/developers), create a new
-OAuth App, and set:
+Open the GitHub App's **General** settings, generate a client secret, and set:
 
-- **Homepage URL:** `http://localhost:5173`
-- **Authorization callback URL:** `http://localhost:5173/auth/callback`
+- **Homepage URL:** the deployed application origin
+- **Callback URL:** `<application-origin>/auth/callback`
+
+GitHub Apps expose a Client ID and Client Secret for the user authorization
+flow used by this application. Loopback development uses `DEV_USER=local`, so
+it does not redirect through GitHub unless that escape hatch is removed.
 
 ### 2. Add your env vars
 
@@ -366,32 +369,32 @@ STORY_GITHUB_PRIVATE_KEY_PATH=/absolute/path/to/key.pem npm start
 
 ## Deploying
 
-Create or update your GitHub OAuth App so it also has your production
-callback URL:
+Update the GitHub App so its callback URL points at production:
 
 ```text
 https://your-domain.example/auth/callback
 ```
 
-Set every required production secret (local dotenv values are never bundled):
+Configure these GitHub Actions repository secrets (local dotenv values are
+never bundled):
 
-```sh
-wrangler secret put GITHUB_CLIENT_ID
-wrangler secret put GITHUB_CLIENT_SECRET
-wrangler secret put AI_GATEWAY_BASE_URL
-wrangler secret put AI_GATEWAY_TOKEN
-wrangler secret put STORY_GITHUB_PRIVATE_KEY
+```text
+CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_API_TOKEN
+APP_GITHUB_CLIENT_ID
+APP_GITHUB_CLIENT_SECRET
+AI_GATEWAY_BASE_URL
+AI_GATEWAY_TOKEN
+STORY_GITHUB_PRIVATE_KEY
 ```
 
 `STORY_ALLOWED_GITHUB_USERS` in `wrangler.jsonc` is a comma-separated list of
 immutable numeric GitHub user IDs. Add every editor there; login names are
 intentionally rejected because they can be renamed and reused.
 
-Deploy:
-
-```sh
-npm run deploy
-```
+Deploy by manually running the **Deploy Cloudflare Worker** GitHub Actions
+workflow. The workflow runs tests and the production build before `wrangler
+deploy`; do not deploy from a developer machine.
 
 ## Key code
 

@@ -149,3 +149,4 @@ vite.config.ts.timestamp-*
 
 # Local work items and credentials never enter this repository.
 .ai-doc/
+.deploy-secrets.json

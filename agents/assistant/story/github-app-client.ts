@@ -422,15 +422,35 @@ export class GitHubAppClient {
     message: string;
     expectedHeadSha: string;
   }): Promise<GitHubCommit> {
+    return this.commitFiles({
+      files: [{ path: input.path, content: input.content }],
+      branch: input.branch,
+      message: input.message,
+      expectedHeadSha: input.expectedHeadSha,
+    });
+  }
+
+  async commitFiles(input: {
+    files: Array<{ path: string; content: string }>;
+    branch: string;
+    message: string;
+    expectedHeadSha: string;
+  }): Promise<GitHubCommit> {
     const head = await this.getRef(input.branch);
     if (head.sha !== input.expectedHeadSha) {
       throw new GitHubConflictError(input.expectedHeadSha, head.sha);
     }
     const parent = await this.getCommit(head.sha);
-    const blobSha = await this.createBlob(input.content);
-    const treeSha = await this.createTree(parent.treeSha, [
-      { path: input.path, mode: "100644", type: "blob", sha: blobSha },
-    ]);
+    const entries: GitHubTreeEntry[] = [];
+    for (const file of input.files) {
+      entries.push({
+        path: file.path,
+        mode: "100644",
+        type: "blob",
+        sha: await this.createBlob(file.content),
+      });
+    }
+    const treeSha = await this.createTree(parent.treeSha, entries);
     const commit = await this.createCommit(input.message, treeSha, [head.sha]);
     try {
       await this.updateRef(input.branch, commit.sha);

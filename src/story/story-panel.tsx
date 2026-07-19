@@ -5,6 +5,7 @@ import {
   ClockCounterClockwiseIcon,
   GitBranchIcon,
   GitCommitIcon,
+  ListBulletsIcon,
   SpinnerGapIcon,
   WarningCircleIcon,
   XIcon
@@ -24,9 +25,11 @@ import {
   restoreStoryEvent,
   restoreStoryVersion,
   syncStoryWorkspace,
+  updateStoryLayout,
   updateStoryWorkspace
 } from "./api";
 import { DesignView } from "./design-view";
+import { FormView } from "./form-view";
 import { HistoryView, type StoryRestoreRequest } from "./history-view";
 import { JsonView } from "./json-view";
 import { StoryEditorDialog } from "./story-editor-dialog";
@@ -38,6 +41,7 @@ import {
 import {
   MysteryStoryDslSchema,
   type MysteryStoryDsl,
+  type StoryLayout,
   type StoryWorkspace
 } from "./types";
 import {
@@ -49,7 +53,7 @@ import {
   STORY_INPUT_CLASS
 } from "./story-ui";
 
-type StoryTab = "design" | "json" | "history";
+type StoryTab = "design" | "form" | "json" | "history";
 type WorkspaceSource =
   | "relationship-panel"
   | "timeline-panel"
@@ -64,6 +68,7 @@ type ConfirmAction =
 
 const TABS: Array<{ id: StoryTab; label: string; icon: ReactNode }> = [
   { id: "design", label: "设计", icon: <GitBranchIcon size={13} /> },
+  { id: "form", label: "表单", icon: <ListBulletsIcon size={13} /> },
   { id: "json", label: "JSON", icon: <BracketsCurlyIcon size={13} /> },
   {
     id: "history",
@@ -187,6 +192,31 @@ export function StoryPanel({
     [acceptWorkspace, busy, handleFailure, workspace]
   );
 
+  const saveLayout = useCallback(
+    async (layout: StoryLayout, summary: string): Promise<boolean> => {
+      if (!workspace || busy) return false;
+      setBusy(true);
+      setError(null);
+      try {
+        const next = await updateStoryLayout({
+          layout,
+          expectedRevision: workspace.revision,
+          source: "design-layout",
+          summary
+        });
+        acceptWorkspace(next);
+        setNotice("节点布局已保存到共享工作区，尚未提交 GitHub");
+        return true;
+      } catch (saveError) {
+        handleFailure("保存节点布局", saveError);
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [acceptWorkspace, busy, handleFailure, workspace]
+  );
+
   const executeConfirmation = async () => {
     if (!workspace || !confirmAction || busy) return;
     setBusy(true);
@@ -256,7 +286,7 @@ export function StoryPanel({
     return (
       <Surface className="flex h-full min-h-80 w-full items-center justify-center !rounded-none bg-kumo-base text-kumo-default">
         <div className="flex items-center gap-2 font-mono text-xs text-kumo-subtle">
-          <SpinnerGapIcon size={16} className="animate-spin text-kumo-accent" />
+          <SpinnerGapIcon size={16} className="animate-spin text-kumo-brand" />
           正在同步 GitHub 工作区…
         </div>
       </Surface>
@@ -289,16 +319,16 @@ export function StoryPanel({
               aria-current={active ? "page" : undefined}
               className={`flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-3 font-mono text-[11px] transition-colors ${
                 active
-                  ? "border-kumo-accent bg-kumo-tint text-kumo-default"
-                  : "border-transparent text-kumo-subtle hover:bg-kumo-hover hover:text-kumo-default"
+                  ? "border-kumo-brand bg-kumo-tint text-kumo-default"
+                  : "border-transparent text-kumo-subtle hover:bg-kumo-fill-hover hover:text-kumo-default"
               }`}
               onClick={() => setActiveTab(tab.id)}
             >
               {tab.icon}
               {tab.label}
-              {tab.id === "design" && workspace?.dirty && (
+              {(tab.id === "design" || tab.id === "form") && workspace?.dirty && (
                 <span className="rounded-sm bg-kumo-warning/15 px-1 text-[9px] text-kumo-warning">
-                  {workspace.diff.items.length}
+                  {workspaceChangeCount(workspace)}
                 </span>
               )}
             </button>
@@ -335,7 +365,14 @@ export function StoryPanel({
         {!workspace ? (
           <EmptyWorkspace onRetry={() => void refresh()} />
         ) : activeTab === "design" ? (
-          <DesignView workspace={workspace} disabled={busy} onEdit={setEditorTarget} />
+          <DesignView
+            workspace={workspace}
+            disabled={busy}
+            onEdit={setEditorTarget}
+            onLayoutChange={saveLayout}
+          />
+        ) : activeTab === "form" ? (
+          <FormView workspace={workspace} disabled={busy} onEdit={setEditorTarget} />
         ) : activeTab === "json" ? (
           <JsonView workspace={workspace} disabled={busy} onSave={saveStory} />
         ) : (
@@ -412,7 +449,7 @@ function StoryStatusHeader({
   return (
     <header className="flex shrink-0 items-center gap-3 border-b border-kumo-line bg-kumo-base px-3 py-2">
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <div className="flex size-7 shrink-0 items-center justify-center rounded-md border border-kumo-accent/30 bg-kumo-accent/10 text-kumo-accent">
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-md border border-kumo-brand/30 bg-kumo-brand/10 text-kumo-brand">
           <GitBranchIcon size={15} weight="bold" />
         </div>
         <div className="min-w-0">
@@ -428,7 +465,7 @@ function StoryStatusHeader({
             )}
           </div>
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden font-mono text-[10px] text-kumo-subtle">
-            <span className="truncate text-kumo-accent">{workspace?.branch ?? "连接中"}</span>
+            <span className="truncate text-kumo-brand">{workspace?.branch ?? "连接中"}</span>
             <span>·</span>
             <span title={workspace?.baseCommitSha}>{workspace ? shortSha(workspace.baseCommitSha) : "-------"}</span>
             <span>·</span>
@@ -486,7 +523,7 @@ function StatusChip({
         : "border-kumo-line text-kumo-subtle";
   return (
     <span className={`max-w-40 truncate rounded border bg-kumo-elevated px-1.5 py-1 font-mono text-[9px] ${toneClass}`} title={`${label}: ${value}`}>
-      <span className="text-kumo-inactive">{label}/</span>{value}
+      <span className="text-kumo-subtle">{label}/</span>{value}
     </span>
   );
 }
@@ -512,7 +549,7 @@ function CommitBar({
         <div className="flex min-w-36 items-center gap-1.5 font-mono text-[10px]">
           <span className={`size-1.5 rounded-full ${workspace.dirty ? "bg-kumo-warning" : "bg-kumo-success"}`} />
           <span className={workspace.dirty ? "text-kumo-warning" : "text-kumo-success"}>
-            {workspace.dirty ? `${workspace.diff.items.length} 项未提交变更` : "工作区干净"}
+            {workspace.dirty ? `${workspaceChangeCount(workspace)} 项未提交变更` : "工作区干净"}
           </span>
         </div>
         <input
@@ -533,7 +570,7 @@ function CommitBar({
           放弃修改
         </Button>
         <Button size="sm" variant="primary" disabled={!workspace.dirty || !message.trim() || busy} icon={<GitCommitIcon size={12} />} onClick={onCommit}>
-          检查并提交
+          检查并批量提交
         </Button>
       </div>
     </footer>
@@ -557,7 +594,7 @@ function confirmationCopy(
       description: `工作区将恢复到 ${workspace.branch} 的当前 HEAD。工作区 revision 留痕仍会保留。`,
       confirmLabel: "放弃修改",
       destructive: true,
-      details: `${workspace.diff.items.length} 项业务变更将从当前工作区移除`
+      details: `${workspaceChangeCount(workspace)} 项业务与布局变更将从当前工作区移除`
     };
   }
   if (action.kind === "commit") {
@@ -567,7 +604,7 @@ function confirmationCopy(
       confirmLabel: "确认提交",
       details: (
         <div className="space-y-1">
-          <div>{workspace.branch} · {workspace.diff.items.length} 项变更</div>
+          <div>{workspace.branch} · {workspaceChangeCount(workspace)} 项累计变更</div>
           <div className="text-kumo-default">{commitMessage.trim()}</div>
         </div>
       )
@@ -622,6 +659,10 @@ function EmptyWorkspace({ onRetry }: { onRetry: () => void }) {
 
 function shortSha(sha: string): string {
   return sha.slice(0, 7);
+}
+
+function workspaceChangeCount(workspace: StoryWorkspace): number {
+  return workspace.diff.items.length + workspace.layoutDiff.length;
 }
 
 function errorMessage(error: unknown): string {

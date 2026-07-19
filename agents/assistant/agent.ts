@@ -5,6 +5,7 @@ import type { ThinkScheduledTasks } from "@cloudflare/think";
 import type { FileInfo, WorkspaceChangeEvent } from "@cloudflare/shell";
 import { nanoid } from "nanoid";
 import { ZodError } from "zod";
+import { StoryLayoutSchema } from "../../src/story/types";
 import { MyAssistant } from "./agents/my-assistant/agent";
 import { createGatewayModel } from "./gateway-model";
 import { DocumentLibrary } from "./document-library";
@@ -396,6 +397,23 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
         return documentJson({ workspace: this.storyWorkspaceView(updated) });
       }
 
+      if (request.method === "PUT" && suffix === "layout") {
+        const body = await storyRequestJson(request);
+        if (body.source !== "design-layout") {
+          throw new Error("source 必须是 design-layout");
+        }
+        const updated = this.getStoryStore().updateLayout({
+          path: this.storyPath,
+          expectedRevision: storyExpectedRevision(body),
+          layout: StoryLayoutSchema.parse(body.layout),
+          actor: `user:${this.storyOwnerLogin}`,
+          source: "design-layout",
+          summary: storyOptionalText(body.summary, "summary", 500)
+        });
+        this._broadcastStoryChange(updated);
+        return documentJson({ workspace: this.storyWorkspaceView(updated) });
+      }
+
       if (request.method === "POST" && suffix === "discard") {
         const body = await storyRequestJson(request);
         const updated = this.getStoryStore().discard({
@@ -504,7 +522,8 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
             committedAt: version.authoredAt,
             url: version.htmlUrl
           },
-          story: version.story
+          story: version.story,
+          layout: version.layout
         });
       }
 
@@ -880,6 +899,9 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
       dirty: workspace.dirty,
       story: workspace.workingStory,
       baseStory: workspace.baseStory,
+      layout: workspace.layout,
+      baseLayout: workspace.baseLayout,
+      layoutDiff: this.getStoryStore().getDiff(workspace.path).layout,
       diff: this.storyDiffView(this.getStoryStore().getDiff(workspace.path)),
       modifiedBy: workspace.modifiedBy,
       modifiedAt: new Date(workspace.updatedAt).toISOString(),

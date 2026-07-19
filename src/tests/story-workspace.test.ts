@@ -13,6 +13,7 @@ import {
   StoryWorkspaceStore,
   type StoryRepositoryClient,
 } from "../../agents/assistant/story/workspace-store";
+import type { StoryLayout } from "../story/types";
 import { uniqueDirectoryName } from "./helpers";
 
 function story(): MysteryStoryDsl {
@@ -31,7 +32,21 @@ function story(): MysteryStoryDsl {
   };
 }
 
+function layout(nodes: StoryLayout["nodes"] = {}): StoryLayout {
+  return { version: 1, nodes };
+}
+
 function repository(overrides: Partial<StoryRepositoryClient> = {}): StoryRepositoryClient {
+  const getContent = overrides.getContent ?? vi.fn(async (path: string) => ({
+    path,
+    sha: "blob-a",
+    content: serializeMysteryStory(story()),
+  }));
+  const commitFile = overrides.commitFile ?? vi.fn(async (input) => ({
+    sha: "commit-b",
+    treeSha: "tree-b",
+    message: input.message,
+  }));
   return {
     defaultBranch: "main",
     ensureBranch: vi.fn(async (branch: string) => ({ ref: `refs/heads/${branch}`, sha: "head-a" })),
@@ -41,12 +56,6 @@ function repository(overrides: Partial<StoryRepositoryClient> = {}): StoryReposi
       treeSha: `tree-${sha}`,
       message: "测试提交",
     })),
-    getContent: vi.fn(async (path: string) => ({ path, sha: "blob-a", content: serializeMysteryStory(story()) })),
-    commitFile: vi.fn(async (input) => ({
-      sha: "commit-b",
-      treeSha: "tree-b",
-      message: input.message,
-    })),
     listVersions: vi.fn(async () => []),
     createPullRequest: vi.fn(async () => ({
       number: 1,
@@ -55,6 +64,28 @@ function repository(overrides: Partial<StoryRepositoryClient> = {}): StoryReposi
       state: "open",
     })),
     ...overrides,
+    getContent: vi.fn(async (path: string, ref?: string) => {
+      const content = await getContent(path, ref);
+      if (path.endsWith(".layout.json")) {
+        const parsed = JSON.parse(content.content) as Record<string, unknown>;
+        if (parsed.version !== 1 || typeof parsed.nodes !== "object") {
+          throw new GitHubApiError(404, "GET", path, "Not Found");
+        }
+      }
+      return content;
+    }),
+    commitFile,
+    commitFiles: overrides.commitFiles ?? vi.fn(async (input) => {
+      const file = input.files.find(({ path }) => !path.endsWith(".layout.json"));
+      if (!file) throw new Error("缺少 story.json");
+      return commitFile({
+        path: file.path,
+        content: file.content,
+        branch: input.branch,
+        message: input.message,
+        expectedHeadSha: input.expectedHeadSha,
+      });
+    }),
   };
 }
 
@@ -77,6 +108,399 @@ async function inStore<T>(
 }
 
 describe("StoryWorkspaceStore", () => {
+  it("treats a missing sidecar as a clean empty layout and versions layout edits", async () => {
+    const result = await inStore(repository(), async (store) => {
+      const initialized = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+      const moved = store.updateLayout({
+        path: initialized.path,
+        expectedRevision: initialized.revision,
+        layout: layout({ "person:detective": { x: 120, y: 80 } }),
+        actor: "user:tester",
+        source: "design-layout",
+        summary: "移动调查员节点",
+      });
+      const discarded = store.discard({
+        path: moved.path,
+        expectedRevision: moved.revision,
+        actor: "user:tester",
+        source: "ui-discard",
+      });
+      return { initialized, moved, discarded, events: store.listEvents(moved.path) };
+    });
+
+    expect(result.initialized).toMatchObject({
+      dirty: false,
+      baseLayoutFileExists: false,
+      baseLayout: { version: 1, nodes: {} },
+      layout: { version: 1, nodes: {} },
+    });
+    expect(result.moved).toMatchObject({ revision: 1, dirty: true });
+    expect(result.moved.layout.nodes["person:detective"]).toEqual({ x: 120, y: 80 });
+    expect(result.events[1]).toMatchObject({
+      kind: "update",
+      summary: "移动调查员节点",
+      beforeLayout: { version: 1, nodes: {} },
+      afterLayout: {
+        nodes: { "person:detective": { x: 120, y: 80 } },
+      },
+      diff: {
+        layout: [{ id: "person:detective", after: { x: 120, y: 80 } }],
+      },
+    });
+    expect(result.discarded).toMatchObject({
+      revision: 2,
+      dirty: false,
+      layout: { version: 1, nodes: {} },
+    });
+    expect(result.events[0]).toMatchObject({
+      kind: "discard",
+      beforeLayout: {
+        nodes: { "person:detective": { x: 120, y: 80 } },
+      },
+      afterLayout: { version: 1, nodes: {} },
+    });
+  });
+
+  it("migrates legacy SQLite rows and events to empty layout snapshots", async () => {
+    const stub = env.AssistantDirectory.get(
+      env.AssistantDirectory.idFromName(uniqueDirectoryName("legacy-story-layout"))
+    );
+    const result = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(`
+        CREATE TABLE story_workspaces (
+          path TEXT PRIMARY KEY,
+          branch TEXT NOT NULL,
+          base_commit_sha TEXT NOT NULL,
+          base_story_json TEXT NOT NULL,
+          base_file_exists INTEGER NOT NULL,
+          working_story_json TEXT NOT NULL,
+          restored_from_sha TEXT,
+          restored_from_event_id INTEGER,
+          remote_head_sha TEXT,
+          revision INTEGER NOT NULL,
+          dirty INTEGER NOT NULL,
+          modified_by TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          commit_nonce TEXT,
+          commit_started_at INTEGER,
+          commit_message TEXT,
+          commit_actor TEXT,
+          commit_source TEXT
+        );
+        CREATE TABLE story_workspace_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          path TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          source TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          base_commit_sha TEXT NOT NULL,
+          restored_from_sha TEXT,
+          before_story_json TEXT,
+          after_story_json TEXT,
+          metadata_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          diff_json TEXT NOT NULL
+        )
+      `);
+      const storyJson = serializeMysteryStory(story());
+      state.storage.sql.exec(
+        `INSERT INTO story_workspaces (
+           path, branch, base_commit_sha, base_story_json, base_file_exists,
+           working_story_json, revision, dirty, modified_by, source,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 1, ?, 0, 0, ?, ?, 1, 1)`,
+        "stories/default/story.json",
+        "drafts/tester",
+        "head-a",
+        storyJson,
+        storyJson,
+        "user:tester",
+        "panel"
+      );
+      state.storage.sql.exec(
+        `INSERT INTO story_workspace_events (
+           path, revision, kind, actor, source, summary, base_commit_sha,
+           before_story_json, after_story_json, metadata_json, created_at,
+           diff_json
+         ) VALUES (?, 0, 'initialize', ?, ?, ?, ?, NULL, ?, '{}', 1, ?)`,
+        "stories/default/story.json",
+        "user:tester",
+        "panel",
+        "旧初始化事件",
+        "head-a",
+        storyJson,
+        JSON.stringify({
+          fileStatus: "unchanged",
+          business: {
+            story: [], cast: [], bonds: [], timeline: [],
+            summary: { added: 0, removed: 0, modified: 0, total: 0 },
+          },
+          json: [],
+        })
+      );
+
+      const store = new StoryWorkspaceStore(state.storage, repository());
+      return {
+        workspace: store.read("stories/default/story.json"),
+        event: store.listEvents("stories/default/story.json")[0],
+      };
+    });
+
+    expect(result.workspace).toMatchObject({
+      dirty: false,
+      baseLayoutFileExists: false,
+      baseLayout: { version: 1, nodes: {} },
+      layout: { version: 1, nodes: {} },
+    });
+    expect(result.event).toMatchObject({
+      beforeLayout: null,
+      afterLayout: null,
+      diff: { layout: [] },
+    });
+  });
+
+  it("commits story.json and story.layout.json through one Git commit", async () => {
+    const commitFiles = vi.fn<StoryRepositoryClient["commitFiles"]>(async (input) => ({
+      sha: "commit-layout",
+      treeSha: "tree-layout",
+      message: input.message,
+    }));
+    const result = await inStore(repository({ commitFiles }), async (store) => {
+      const initialized = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+      const moved = store.updateLayout({
+        path: initialized.path,
+        expectedRevision: initialized.revision,
+        layout: layout({ opening: { x: 400, y: 360 } }),
+        actor: "user:tester",
+        source: "design-layout",
+      });
+      return store.confirmCommit({
+        path: moved.path,
+        expectedRevision: moved.revision,
+        message: "保存画板布局",
+        actor: "user:tester",
+        source: "ui-confirmation",
+      });
+    });
+
+    expect(commitFiles).toHaveBeenCalledOnce();
+    expect(commitFiles.mock.calls[0]![0].files.map(({ path }) => path)).toEqual([
+      "stories/default/story.json",
+      "stories/default/story.layout.json",
+    ]);
+    expect(JSON.parse(commitFiles.mock.calls[0]![0].files[1]!.content)).toEqual(
+      layout({ opening: { x: 400, y: 360 } })
+    );
+    expect(result.workspace).toMatchObject({
+      baseCommitSha: "commit-layout",
+      baseLayoutFileExists: true,
+      dirty: false,
+      baseLayout: { nodes: { opening: { x: 400, y: 360 } } },
+    });
+  });
+
+  it("merges story and layout commit history without duplicates in newest-first order", async () => {
+    const shared = {
+      sha: "commit-shared",
+      message: "同时修改内容与布局",
+      authoredAt: "2026-07-19T09:00:00.000Z",
+      authorName: "tester",
+      authorLogin: "tester",
+      htmlUrl: "https://example.com/shared",
+    };
+    const storyOnly = {
+      ...shared,
+      sha: "commit-story",
+      message: "只修改内容",
+      authoredAt: "2026-07-19T08:00:00.000Z",
+      htmlUrl: "https://example.com/story",
+    };
+    const layoutOnly = {
+      ...shared,
+      sha: "commit-layout",
+      message: "只修改布局",
+      authoredAt: "2026-07-19T10:00:00.000Z",
+      htmlUrl: "https://example.com/layout",
+    };
+    const listVersions = vi.fn(async (
+      _branch: string,
+      path: string,
+      options: { page?: number; perPage?: number } = {},
+    ) => {
+      const versions = path.endsWith(".layout.json")
+        ? [layoutOnly, shared]
+        : [shared, storyOnly];
+      const page = options.page ?? 1;
+      const perPage = options.perPage ?? 30;
+      return versions.slice((page - 1) * perPage, page * perPage);
+    });
+
+    const result = await inStore(repository({ listVersions }), async (store) => {
+      const initialized = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+      return {
+        firstPage: await store.listVersions(initialized.path, { page: 1, perPage: 2 }),
+        secondPage: await store.listVersions(initialized.path, { page: 2, perPage: 2 }),
+      };
+    });
+
+    expect(result.firstPage.map(({ sha }) => sha)).toEqual([
+      "commit-layout",
+      "commit-shared",
+    ]);
+    expect(result.secondPage.map(({ sha }) => sha)).toEqual(["commit-story"]);
+    expect(new Set(listVersions.mock.calls.map(([, path]) => path))).toEqual(
+      new Set([
+        "stories/default/story.json",
+        "stories/default/story.layout.json",
+      ]),
+    );
+  });
+
+  it("restores layout from event snapshots and historical Git versions", async () => {
+    const historicalLayout = layout({ "timeline:arrival": { x: 510, y: 620 } });
+    const repo = repository({
+      getContent: vi.fn(async (path: string, ref: string) => {
+        if (path.endsWith(".layout.json")) {
+          if (ref === "old-sha") {
+            return { path, sha: "layout-old", content: JSON.stringify(historicalLayout) };
+          }
+          throw new GitHubApiError(404, "GET", path, "Not Found");
+        }
+        return {
+          path,
+          sha: `blob-${ref}`,
+          content: serializeMysteryStory(story()),
+        };
+      }),
+    });
+
+    const result = await inStore(repo, async (store) => {
+      const initialized = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+      const first = store.updateLayout({
+        path: initialized.path,
+        expectedRevision: initialized.revision,
+        layout: layout({ "person:detective": { x: 100, y: 120 } }),
+        actor: "user:tester",
+        source: "design-layout",
+      });
+      const firstEvent = store.listEvents(first.path)[0]!;
+      const second = store.updateLayout({
+        path: first.path,
+        expectedRevision: first.revision,
+        layout: layout({ "person:detective": { x: 220, y: 240 } }),
+        actor: "user:tester",
+        source: "design-layout",
+      });
+      const eventRestored = store.restoreEventSnapshot({
+        path: second.path,
+        eventId: firstEvent.id,
+        expectedRevision: second.revision,
+        actor: "user:tester",
+        source: "ui-event-restore",
+      });
+      const version = await store.getVersion(second.path, "old-sha");
+      const versionRestored = await store.restoreToWorkspace({
+        path: second.path,
+        sha: "old-sha",
+        expectedRevision: eventRestored.revision,
+        actor: "user:tester",
+        source: "ui-history-restore",
+      });
+      return { eventRestored, version, versionRestored };
+    });
+
+    expect(result.eventRestored.layout).toEqual(
+      layout({ "person:detective": { x: 100, y: 120 } })
+    );
+    expect(result.version.layout).toEqual(historicalLayout);
+    expect(result.versionRestored).toMatchObject({
+      restoredFromSha: "old-sha",
+      layout: historicalLayout,
+    });
+  });
+
+  it("rebases non-overlapping local and remote layout moves", async () => {
+    let remoteHead = "head-a";
+    const baseLayout = layout({
+      "person:detective": { x: 100, y: 100 },
+      "timeline:arrival": { x: 300, y: 400 },
+    });
+    const remoteLayout = layout({
+      "person:detective": { x: 100, y: 100 },
+      "timeline:arrival": { x: 360, y: 400 },
+    });
+    const repo = repository({
+      getRef: vi.fn(async (branch: string) => ({
+        ref: `refs/heads/${branch}`,
+        sha: remoteHead,
+      })),
+      getContent: vi.fn(async (path: string, ref: string) => ({
+        path,
+        sha: `blob-${ref}`,
+        content: path.endsWith(".layout.json")
+          ? JSON.stringify(ref === "head-remote" ? remoteLayout : baseLayout)
+          : serializeMysteryStory(story()),
+      })),
+    });
+
+    const synced = await inStore(repo, async (store) => {
+      const initialized = await store.initialize({
+        path: "stories/default/story.json",
+        branch: "drafts/tester",
+        actor: "user:tester",
+        source: "panel",
+      });
+      const local = store.updateLayout({
+        path: initialized.path,
+        expectedRevision: initialized.revision,
+        layout: layout({
+          "person:detective": { x: 140, y: 100 },
+          "timeline:arrival": { x: 300, y: 400 },
+        }),
+        actor: "user:tester",
+        source: "design-layout",
+      });
+      remoteHead = "head-remote";
+      return store.syncFromRemote({
+        path: local.path,
+        expectedRevision: local.revision,
+        actor: "user:tester",
+        source: "ui-sync",
+      });
+    });
+
+    expect(synced).toMatchObject({ baseCommitSha: "head-remote", dirty: true });
+    expect(synced.baseLayout).toEqual(remoteLayout);
+    expect(synced.layout).toEqual(layout({
+      "person:detective": { x: 140, y: 100 },
+      "timeline:arrival": { x: 360, y: 400 },
+    }));
+  });
+
   it("keeps UI/agent edits uncommitted until the user confirms", async () => {
     const commitFile = vi.fn<StoryRepositoryClient["commitFile"]>(async (input) => ({
       sha: "commit-b",

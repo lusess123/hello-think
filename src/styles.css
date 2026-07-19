@@ -121,6 +121,16 @@ body {
   scrollbar-gutter: stable;
 }
 
+.story-canvas-interactive {
+  transition: filter 120ms ease;
+}
+
+.story-canvas-interactive:focus-visible {
+  filter:
+    drop-shadow(0 0 1px var(--color-kumo-focus))
+    drop-shadow(0 0 3px var(--color-kumo-focus));
+}
+
 /* Kumo's primary foreground is a text token rather than a generic color
    token, so SVG strokes need an explicit semantic bridge. */
 .story-stroke-default {

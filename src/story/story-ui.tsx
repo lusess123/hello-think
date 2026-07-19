@@ -5,7 +5,7 @@ import { ProductConfirmDialog } from "../components/product-dialog";
 import type { StoryDiffAction } from "./types";
 
 export const STORY_INPUT_CLASS =
-  "w-full rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 font-mono text-xs text-kumo-default outline-none placeholder:text-kumo-inactive focus:border-kumo-accent focus:ring-1 focus:ring-kumo-accent/30 disabled:cursor-not-allowed disabled:opacity-50";
+  "w-full rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 font-mono text-xs text-kumo-default outline-none placeholder:text-kumo-subtle focus:border-kumo-focus focus:ring-1 focus:ring-kumo-focus/30 disabled:cursor-not-allowed disabled:opacity-50";
 
 export const STORY_LABEL_CLASS =
   "mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-kumo-subtle";
@@ -29,7 +29,7 @@ export function StorySectionHeader({
       </h2>
       <div className="flex min-w-0 items-center gap-2">
         {meta && (
-          <span className="max-w-64 truncate font-mono text-[9px] text-kumo-inactive">
+          <span className="max-w-64 truncate font-mono text-[9px] text-kumo-subtle">
             {meta}
           </span>
         )}
@@ -41,7 +41,7 @@ export function StorySectionHeader({
 
 export function StoryEmpty({ label }: { label: string }) {
   return (
-    <div className="p-5 text-center font-mono text-[10px] text-kumo-inactive">
+    <div className="p-5 text-center font-mono text-[10px] text-kumo-subtle">
       {label}
     </div>
   );

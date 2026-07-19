@@ -1,6 +1,7 @@
 import type {
   MysteryStoryDsl,
   StoryCommit,
+  StoryLayout,
   StoryPullRequest,
   StoryVersion,
   StoryWorkspace,
@@ -48,6 +49,22 @@ export async function updateStoryWorkspace(input: {
     method: "PUT",
     body: JSON.stringify(input)
   });
+  return body.workspace;
+}
+
+export async function updateStoryLayout(input: {
+  layout: StoryLayout;
+  expectedRevision: number;
+  source: "design-layout";
+  summary?: string;
+}): Promise<StoryWorkspace> {
+  const body = await request<{ workspace: StoryWorkspace }>(
+    `${STORY_API}/layout`,
+    {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }
+  );
   return body.workspace;
 }
 
@@ -125,7 +142,11 @@ export async function fetchStoryHistory(input: {
 export async function fetchStoryVersion(
   sha: string,
   signal?: AbortSignal
-): Promise<{ version: StoryVersion; story: MysteryStoryDsl }> {
+): Promise<{
+  version: StoryVersion;
+  story: MysteryStoryDsl;
+  layout: StoryLayout;
+}> {
   return request(`${STORY_API}/version/${encodeURIComponent(sha)}`, { signal });
 }
 

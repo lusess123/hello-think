@@ -143,7 +143,7 @@ export function DocumentPanel({
       <Surface className="w-[min(30rem,calc(100vw-2rem))] rounded-xl p-4 shadow-xl ring ring-kumo-line">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <FileTextIcon size={17} className="text-kumo-accent" />
+          <FileTextIcon size={17} className="text-kumo-brand" />
           <Text size="sm" bold>
             文档库
           </Text>
@@ -177,7 +177,7 @@ export function DocumentPanel({
           }}
           placeholder="搜索所有已索引文档"
           aria-label="搜索文档"
-          className="min-w-0 flex-1 rounded-lg border border-kumo-line bg-kumo-base px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-kumo-accent"
+          className="min-w-0 flex-1 rounded-lg border border-kumo-line bg-kumo-base px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-kumo-focus"
         />
         <Button
           type="submit"
@@ -201,7 +201,7 @@ export function DocumentPanel({
 
       {query.trim() && (
         <div className="mt-3">
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-kumo-inactive">
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-kumo-subtle">
             检索结果
           </div>
           <VirtualList
@@ -229,7 +229,7 @@ export function DocumentPanel({
         </div>
       )}
 
-      <div className="mt-3 mb-1 text-[11px] font-medium uppercase tracking-wide text-kumo-inactive">
+      <div className="mt-3 mb-1 text-[11px] font-medium uppercase tracking-wide text-kumo-subtle">
         原始文件与索引
       </div>
       <VirtualList
@@ -247,11 +247,11 @@ export function DocumentPanel({
           </div>
         }
         renderItem={(document) => (
-          <div className="flex items-start gap-2 rounded-md p-1 hover:bg-kumo-hover/60">
+          <div className="flex items-start gap-2 rounded-md p-1 hover:bg-kumo-fill-hover/60">
             {document.mimeType === "application/pdf" ? (
-              <FilePdfIcon size={20} className="mt-0.5 shrink-0 text-kumo-accent" />
+              <FilePdfIcon size={20} className="mt-0.5 shrink-0 text-kumo-brand" />
             ) : (
-              <FileTextIcon size={20} className="mt-0.5 shrink-0 text-kumo-accent" />
+              <FileTextIcon size={20} className="mt-0.5 shrink-0 text-kumo-brand" />
             )}
             <a
               href={`/chat/documents/${encodeURIComponent(document.id)}/content`}

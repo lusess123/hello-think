@@ -17,6 +17,13 @@ import {
   serializeMysteryStory,
   type MysteryStoryDsl,
 } from "./schema";
+import {
+  StoryLayoutSchema,
+  type StoryLayout,
+  type StoryLayoutDiffItem,
+} from "../../../src/story/types";
+
+const EMPTY_STORY_LAYOUT_JSON = '{"version":1,"nodes":{}}\n';
 
 export type StoryWorkspaceEventKind =
   | "initialize"
@@ -33,6 +40,9 @@ export interface StoryWorkspace {
   baseStory: MysteryStoryDsl;
   baseFileExists: boolean;
   workingStory: MysteryStoryDsl;
+  baseLayout: StoryLayout;
+  baseLayoutFileExists: boolean;
+  layout: StoryLayout;
   restoredFromSha: string | null;
   restoredFromEventId: number | null;
   remoteHeadSha: string | null;
@@ -56,6 +66,8 @@ export interface StoryWorkspaceEvent {
   restoredFromSha: string | null;
   beforeStory: MysteryStoryDsl | null;
   afterStory: MysteryStoryDsl | null;
+  beforeLayout: StoryLayout | null;
+  afterLayout: StoryLayout | null;
   metadata: Record<string, unknown>;
   createdAt: number;
   diff: StoryWorkspaceDiff;
@@ -81,10 +93,12 @@ export interface StoryWorkspaceDiff {
   fileStatus: "added" | "modified" | "unchanged";
   business: StoryBusinessDiff;
   json: JsonDiffLine[];
+  layout: StoryLayoutDiffItem[];
 }
 
 export interface StoryVersion extends GitHubVersion {
   story: MysteryStoryDsl;
+  layout: StoryLayout;
 }
 
 export interface StoryCommitResult {
@@ -101,6 +115,7 @@ export interface StoryRepositoryClient
     | "getCommit"
     | "getContent"
     | "commitFile"
+    | "commitFiles"
     | "listVersions"
     | "createPullRequest"
   > {}
@@ -113,6 +128,9 @@ interface StoryWorkspaceRow {
   base_story_json: string;
   base_file_exists: number;
   working_story_json: string;
+  base_layout_json: string;
+  base_layout_file_exists: number;
+  working_layout_json: string;
   restored_from_sha: string | null;
   restored_from_event_id: number | null;
   remote_head_sha: string | null;
@@ -142,6 +160,8 @@ interface StoryWorkspaceEventRow {
   restored_from_sha: string | null;
   before_story_json: string | null;
   after_story_json: string | null;
+  before_layout_json: string | null;
+  after_layout_json: string | null;
   metadata_json: string;
   created_at: number;
   diff_json: string;
@@ -284,9 +304,11 @@ export class StoryWorkspaceStore {
       story = MysteryStoryDslSchema.parse(input.initialStory);
       baseFileExists = false;
     }
+    const remoteLayout = await this.readRemoteLayout(path, ref.sha);
 
     const timestamp = this.now();
     const storyJson = serializeMysteryStory(story);
+    const layoutJson = serializeStoryLayout(remoteLayout.layout);
     const dirty = !baseFileExists;
     return this.storage.transactionSync(() => {
       // Another request can finish the GitHub I/O above while this request is
@@ -298,15 +320,19 @@ export class StoryWorkspaceStore {
       this.sql.exec(
         `INSERT OR IGNORE INTO story_workspaces (
            path, branch, base_commit_sha, base_story_json, base_file_exists,
-           working_story_json, revision, dirty, modified_by, source,
+           working_story_json, base_layout_json, base_layout_file_exists,
+           working_layout_json, revision, dirty, modified_by, source,
            created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
         path,
         branch,
         ref.sha,
         storyJson,
         baseFileExists ? 1 : 0,
         storyJson,
+        layoutJson,
+        remoteLayout.exists ? 1 : 0,
+        layoutJson,
         dirty ? 1 : 0,
         actor,
         source,
@@ -321,6 +347,8 @@ export class StoryWorkspaceStore {
         source,
         "初始化剧本工作区",
         this.diff(workspace),
+        null,
+        {},
         null
       );
       return workspace;
@@ -354,8 +382,17 @@ export class StoryWorkspaceStore {
     return this.storage.transactionSync(() => {
       const current = this.readMutable(path, input.expectedRevision);
       const baseJson = serializeMysteryStory(current.baseStory);
-      const dirty = !current.baseFileExists || workingJson !== baseJson;
-      const eventDiff = diffStories(current.workingStory, story);
+      const dirty =
+        !current.baseFileExists ||
+        workingJson !== baseJson ||
+        serializeStoryLayout(current.layout) !==
+          serializeStoryLayout(current.baseLayout);
+      const eventDiff = diffStories(
+        current.workingStory,
+        story,
+        current.layout,
+        current.layout
+      );
       const updated = this.sql.exec(
         `UPDATE story_workspaces
          SET working_story_json = ?, revision = revision + 1, dirty = ?,
@@ -385,6 +422,64 @@ export class StoryWorkspaceStore {
     });
   }
 
+  updateLayout(input: {
+    path: string;
+    expectedRevision: number;
+    layout: StoryLayout;
+    actor: string;
+    source: string;
+    summary?: string;
+  }): StoryWorkspace {
+    const path = normalizeStoryPath(input.path);
+    const actor = requiredText(input.actor, "actor");
+    const source = requiredText(input.source, "source");
+    const layout = normalizeStoryLayout(input.layout);
+    const workingLayoutJson = serializeStoryLayout(layout);
+    return this.storage.transactionSync(() => {
+      const current = this.readMutable(path, input.expectedRevision);
+      const dirty =
+        !current.baseFileExists ||
+        serializeMysteryStory(current.workingStory) !==
+          serializeMysteryStory(current.baseStory) ||
+        workingLayoutJson !== serializeStoryLayout(current.baseLayout);
+      const updated = this.sql.exec(
+        `UPDATE story_workspaces
+         SET working_layout_json = ?, revision = revision + 1, dirty = ?,
+             restored_from_sha = NULL, restored_from_event_id = NULL,
+             modified_by = ?, source = ?, updated_at = ?
+         WHERE path = ? AND revision = ? AND commit_nonce IS NULL`,
+        workingLayoutJson,
+        dirty ? 1 : 0,
+        actor,
+        source,
+        this.now(),
+        path,
+        input.expectedRevision
+      );
+      if (updated.rowsWritten !== 1) {
+        this.throwCurrentState(path, input.expectedRevision);
+      }
+      const workspace = this.read(path);
+      this.addEvent(
+        workspace,
+        "update",
+        actor,
+        source,
+        eventSummary(input.summary, "更新剧本布局"),
+        diffStories(
+          current.workingStory,
+          current.workingStory,
+          current.layout,
+          layout
+        ),
+        current.workingStory,
+        {},
+        current.layout
+      );
+      return workspace;
+    });
+  }
+
   discard(input: {
     path: string;
     expectedRevision: number;
@@ -396,10 +491,17 @@ export class StoryWorkspaceStore {
     const source = requiredText(input.source, "source");
     return this.storage.transactionSync(() => {
       const current = this.readMutable(path, input.expectedRevision);
-      const eventDiff = diffStories(current.workingStory, current.baseStory);
+      const eventDiff = diffStories(
+        current.workingStory,
+        current.baseStory,
+        current.layout,
+        current.baseLayout
+      );
       const updated = this.sql.exec(
         `UPDATE story_workspaces
-         SET working_story_json = base_story_json, revision = revision + 1,
+         SET working_story_json = base_story_json,
+             working_layout_json = base_layout_json,
+             revision = revision + 1,
              dirty = CASE WHEN base_file_exists = 1 THEN 0 ELSE 1 END,
              restored_from_sha = NULL, restored_from_event_id = NULL,
              modified_by = ?, source = ?, updated_at = ?
@@ -419,7 +521,9 @@ export class StoryWorkspaceStore {
         source,
         "放弃全部未提交修改",
         eventDiff,
-        current.workingStory
+        current.workingStory,
+        {},
+        current.layout
       );
       return workspace;
     });
@@ -434,12 +538,16 @@ export class StoryWorkspaceStore {
   }): Promise<StoryWorkspace> {
     const path = normalizeStoryPath(input.path);
     const sha = requiredText(input.sha, "sha");
-    const content = await this.github.getContent(path, sha);
+    const [content, remoteLayout] = await Promise.all([
+      this.github.getContent(path, sha),
+      this.readRemoteLayout(path, sha),
+    ]);
     const restoredStory = parseMysteryStoryJson(content.content);
     return this.applyRestore(
       path,
       input.expectedRevision,
       restoredStory,
+      remoteLayout.layout,
       sha,
       null,
       input.actor,
@@ -476,6 +584,7 @@ export class StoryWorkspaceStore {
       path,
       input.expectedRevision,
       parseMysteryStoryJson(target.after_story_json),
+      parseOptionalLayoutJson(target.after_layout_json) ?? emptyStoryLayout(),
       null,
       input.eventId,
       input.actor,
@@ -543,10 +652,18 @@ export class StoryWorkspaceStore {
     this.activeCommitNonces.add(nonce);
 
     try {
-      const commit = await this.github.commitFile({
-        path,
+      const commit = await this.github.commitFiles({
+        files: [
+          {
+            path,
+            content: serializeMysteryStory(current.workingStory),
+          },
+          {
+            path: storyLayoutPath(path),
+            content: serializeStoryLayout(current.layout),
+          },
+        ],
         branch: current.branch,
-        content: serializeMysteryStory(current.workingStory),
         message,
         expectedHeadSha: current.baseCommitSha,
       });
@@ -593,12 +710,16 @@ export class StoryWorkspaceStore {
       return { status: "cleared", workspace };
     }
 
-    const remoteStory = parseMysteryStoryJson(
-      (await this.github.getContent(path, ref.sha)).content
-    );
+    const [remoteStoryContent, remoteLayout] = await Promise.all([
+      this.github.getContent(path, ref.sha),
+      this.readRemoteLayout(path, ref.sha),
+    ]);
+    const remoteStory = parseMysteryStoryJson(remoteStoryContent.content);
     if (
       serializeMysteryStory(remoteStory) !==
-      serializeMysteryStory(pending.workingStory)
+        serializeMysteryStory(pending.workingStory) ||
+      serializeStoryLayout(remoteLayout.layout) !==
+        serializeStoryLayout(pending.layout)
     ) {
       const workspace = this.clearPendingCommit(path, nonce, ref.sha);
       return {
@@ -671,7 +792,8 @@ export class StoryWorkspaceStore {
       const committed = this.sql.exec(
         `UPDATE story_workspaces
          SET base_commit_sha = ?, base_story_json = working_story_json,
-             base_file_exists = 1, revision = revision + 1, dirty = 0,
+             base_file_exists = 1, base_layout_json = working_layout_json,
+             base_layout_file_exists = 1, revision = revision + 1, dirty = 0,
              restored_from_sha = NULL, restored_from_event_id = NULL,
              remote_head_sha = NULL, modified_by = ?, source = ?,
              updated_at = ?, commit_nonce = NULL, commit_started_at = NULL,
@@ -704,7 +826,8 @@ export class StoryWorkspaceStore {
           previousRestoredFromSha: before.restoredFromSha,
           previousRestoredFromEventId: before.restoredFromEventId,
           recovered,
-        }
+        },
+        before.baseLayoutFileExists ? before.baseLayout : null
       );
       return { workspace, commit };
     });
@@ -748,9 +871,12 @@ export class StoryWorkspaceStore {
       });
     }
 
-    const remoteStory = parseMysteryStoryJson(
-      (await this.github.getContent(path, remoteRef.sha)).content
-    );
+    const [remoteStoryContent, remoteLayoutResult] = await Promise.all([
+      this.github.getContent(path, remoteRef.sha),
+      this.readRemoteLayout(path, remoteRef.sha),
+    ]);
+    const remoteStory = parseMysteryStoryJson(remoteStoryContent.content);
+    const remoteLayout = remoteLayoutResult.layout;
 
     return this.storage.transactionSync(() => {
       const current = this.readMutable(path, input.expectedRevision);
@@ -761,28 +887,52 @@ export class StoryWorkspaceStore {
         current.baseCommitSha,
         remoteRef.sha
       );
+      const mergedLayout = rebaseLayout(
+        current.baseLayout,
+        current.layout,
+        remoteLayout,
+        current.baseCommitSha,
+        remoteRef.sha
+      );
       const beforeWorkingJson = serializeMysteryStory(current.workingStory);
       const mergedJson = serializeMysteryStory(mergedStory);
       const remoteJson = serializeMysteryStory(remoteStory);
-      const dirty = mergedJson !== remoteJson;
-      const eventDiff = diffStories(current.workingStory, mergedStory);
+      const beforeWorkingLayoutJson = serializeStoryLayout(current.layout);
+      const mergedLayoutJson = serializeStoryLayout(mergedLayout);
+      const remoteLayoutJson = serializeStoryLayout(remoteLayout);
+      const dirty =
+        mergedJson !== remoteJson || mergedLayoutJson !== remoteLayoutJson;
+      const eventDiff = diffStories(
+        current.workingStory,
+        mergedStory,
+        current.layout,
+        mergedLayout
+      );
+      const workingCopyUnchanged =
+        mergedJson === beforeWorkingJson &&
+        mergedLayoutJson === beforeWorkingLayoutJson;
       const restoredFromSha =
-        dirty && mergedJson === beforeWorkingJson ? current.restoredFromSha : null;
+        dirty && workingCopyUnchanged ? current.restoredFromSha : null;
       const restoredFromEventId =
-        dirty && mergedJson === beforeWorkingJson
+        dirty && workingCopyUnchanged
           ? current.restoredFromEventId
           : null;
 
       const updated = this.sql.exec(
         `UPDATE story_workspaces
          SET base_commit_sha = ?, base_story_json = ?, base_file_exists = 1,
-             working_story_json = ?, revision = revision + 1, dirty = ?,
+             working_story_json = ?, base_layout_json = ?,
+             base_layout_file_exists = ?, working_layout_json = ?,
+             revision = revision + 1, dirty = ?,
              restored_from_sha = ?, restored_from_event_id = ?,
              remote_head_sha = NULL, modified_by = ?, source = ?, updated_at = ?
          WHERE path = ? AND revision = ? AND commit_nonce IS NULL`,
         remoteRef.sha,
         remoteJson,
         mergedJson,
+        remoteLayoutJson,
+        remoteLayoutResult.exists ? 1 : 0,
+        mergedLayoutJson,
         dirty ? 1 : 0,
         restoredFromSha,
         restoredFromEventId,
@@ -810,9 +960,12 @@ export class StoryWorkspaceStore {
           remoteHeadSha: remoteRef.sha,
           previousBaseStory: current.baseStory,
           remoteBaseStory: remoteStory,
+          previousBaseLayout: current.baseLayout,
+          remoteBaseLayout: remoteLayout,
           previousRestoredFromSha: current.restoredFromSha,
           previousRestoredFromEventId: current.restoredFromEventId,
-        }
+        },
+        current.layout
       );
       return workspace;
     });
@@ -823,15 +976,33 @@ export class StoryWorkspaceStore {
     options: { page?: number; perPage?: number } = {}
   ): Promise<GitHubVersion[]> {
     const workspace = this.read(path);
-    return this.github.listVersions(workspace.branch, workspace.path, options);
+    const page = Math.max(1, Math.floor(options.page ?? 1));
+    const perPage = Math.min(100, Math.max(1, Math.floor(options.perPage ?? 30)));
+    const requiredCount = page * perPage;
+    const batchSize = Math.min(100, requiredCount);
+    const batchPages = Math.ceil(requiredCount / batchSize);
+    const paths = [workspace.path, storyLayoutPath(workspace.path)];
+    const pages = await Promise.all(
+      paths.flatMap((versionPath) =>
+        Array.from({ length: batchPages }, (_, index) =>
+          this.github.listVersions(workspace.branch, versionPath, {
+            page: index + 1,
+            perPage: batchSize,
+          })
+        )
+      )
+    );
+    const merged = mergeStoryVersions(pages.flat());
+    return merged.slice((page - 1) * perPage, page * perPage);
   }
 
   async getVersion(path: string, sha: string): Promise<StoryVersion> {
     const workspace = this.read(path);
     const normalizedSha = requiredText(sha, "sha");
-    const [content, versions] = await Promise.all([
+    const [content, remoteLayout, versions] = await Promise.all([
       this.github.getContent(workspace.path, normalizedSha),
-      this.github.listVersions(workspace.branch, workspace.path, { perPage: 100 }),
+      this.readRemoteLayout(workspace.path, normalizedSha),
+      this.listVersions(workspace.path, { perPage: 100 }),
     ]);
     const metadata = versions.find((version) => version.sha === normalizedSha);
     return {
@@ -842,7 +1013,26 @@ export class StoryWorkspaceStore {
       authorLogin: metadata?.authorLogin ?? null,
       htmlUrl: metadata?.htmlUrl ?? "",
       story: parseMysteryStoryJson(content.content),
+      layout: remoteLayout.layout,
     };
+  }
+
+  private async readRemoteLayout(
+    storyPath: string,
+    ref: string
+  ): Promise<{ layout: StoryLayout; exists: boolean }> {
+    try {
+      const content = await this.github.getContent(storyLayoutPath(storyPath), ref);
+      return {
+        layout: parseStoryLayoutJson(content.content),
+        exists: true,
+      };
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) {
+        return { layout: emptyStoryLayout(), exists: false };
+      }
+      throw error;
+    }
   }
 
   async createPullRequest(input: {
@@ -879,7 +1069,8 @@ export class StoryWorkspaceStore {
     const rows = this.sql.exec<StoryWorkspaceEventRow>(
       `SELECT id, path, revision, kind, actor, source, summary,
               base_commit_sha, restored_from_sha, before_story_json,
-              after_story_json, metadata_json, created_at, diff_json
+              after_story_json, before_layout_json, after_layout_json,
+              metadata_json, created_at, diff_json
        FROM story_workspace_events
        WHERE path = ?${cursor === undefined ? "" : " AND id < ?"}
        ORDER BY id DESC
@@ -900,9 +1091,11 @@ export class StoryWorkspaceStore {
       restoredFromSha: row.restored_from_sha,
       beforeStory: parseOptionalStoryJson(row.before_story_json),
       afterStory: parseOptionalStoryJson(row.after_story_json),
+      beforeLayout: parseOptionalLayoutJson(row.before_layout_json),
+      afterLayout: parseOptionalLayoutJson(row.after_layout_json),
       metadata: parseMetadata(row.metadata_json),
       createdAt: row.created_at,
-      diff: JSON.parse(row.diff_json) as StoryWorkspaceDiff,
+      diff: parseWorkspaceDiff(row.diff_json),
     }));
   }
 
@@ -959,6 +1152,7 @@ export class StoryWorkspaceStore {
     path: string,
     expectedRevision: number,
     story: MysteryStoryDsl,
+    layoutInput: StoryLayout,
     restoredFromSha: string | null,
     restoredFromEventId: number | null,
     actorInput: string,
@@ -969,18 +1163,30 @@ export class StoryWorkspaceStore {
     const actor = requiredText(actorInput, "actor");
     const source = requiredText(sourceInput, "source");
     const storyJson = serializeMysteryStory(story);
+    const layout = normalizeStoryLayout(layoutInput);
+    const layoutJson = serializeStoryLayout(layout);
     return this.storage.transactionSync(() => {
       const current = this.readMutable(path, expectedRevision);
-      const eventDiff = diffStories(current.workingStory, story);
+      const eventDiff = diffStories(
+        current.workingStory,
+        story,
+        current.layout,
+        layout
+      );
       const row = this.findRow(path)!;
-      const dirty = !Boolean(row.base_file_exists) || storyJson !== row.base_story_json;
+      const dirty =
+        !Boolean(row.base_file_exists) ||
+        storyJson !== row.base_story_json ||
+        layoutJson !== row.base_layout_json;
       const updated = this.sql.exec(
         `UPDATE story_workspaces
-         SET working_story_json = ?, revision = revision + 1, dirty = ?,
+         SET working_story_json = ?, working_layout_json = ?,
+             revision = revision + 1, dirty = ?,
              restored_from_sha = ?, restored_from_event_id = ?,
              modified_by = ?, source = ?, updated_at = ?
          WHERE path = ? AND revision = ? AND commit_nonce IS NULL`,
         storyJson,
+        layoutJson,
         dirty ? 1 : 0,
         restoredFromSha,
         restoredFromEventId,
@@ -1000,7 +1206,8 @@ export class StoryWorkspaceStore {
         eventSummary(summaryInput, "恢复历史版本到工作区"),
         eventDiff,
         current.workingStory,
-        metadata
+        metadata,
+        current.layout
       );
       return workspace;
     });
@@ -1038,12 +1245,14 @@ export class StoryWorkspaceStore {
         fileStatus: "added",
         business,
         json: createJsonLineDiff("", afterJson),
+        layout: diffStoryLayouts(workspace.baseLayout, workspace.layout),
       };
     }
     return {
       fileStatus: workspace.dirty ? "modified" : "unchanged",
       business: createStoryBusinessDiff(workspace.baseStory, workspace.workingStory),
       json: createJsonLineDiff(beforeJson, afterJson),
+      layout: diffStoryLayouts(workspace.baseLayout, workspace.layout),
     };
   }
 
@@ -1055,14 +1264,16 @@ export class StoryWorkspaceStore {
     summary: string,
     diff: StoryWorkspaceDiff,
     beforeStory: MysteryStoryDsl | null,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    beforeLayout: StoryLayout | null = workspace.layout
   ): void {
     this.sql.exec(
       `INSERT INTO story_workspace_events (
          path, revision, kind, actor, source, summary, base_commit_sha,
          restored_from_sha, before_story_json, after_story_json,
-         metadata_json, created_at, diff_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         before_layout_json, after_layout_json, metadata_json, created_at,
+         diff_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       workspace.path,
       workspace.revision,
       kind,
@@ -1073,6 +1284,8 @@ export class StoryWorkspaceStore {
       workspace.restoredFromSha,
       beforeStory ? serializeMysteryStory(beforeStory) : null,
       serializeMysteryStory(workspace.workingStory),
+      beforeLayout ? serializeStoryLayout(beforeLayout) : null,
+      serializeStoryLayout(workspace.layout),
       JSON.stringify(metadata),
       this.now(),
       JSON.stringify(diff)
@@ -1088,6 +1301,10 @@ export class StoryWorkspaceStore {
         base_story_json    TEXT NOT NULL,
         base_file_exists   INTEGER NOT NULL CHECK(base_file_exists IN (0, 1)),
         working_story_json TEXT NOT NULL,
+        base_layout_json   TEXT NOT NULL DEFAULT '{"version":1,"nodes":{}}',
+        base_layout_file_exists INTEGER NOT NULL DEFAULT 0
+                          CHECK(base_layout_file_exists IN (0, 1)),
+        working_layout_json TEXT NOT NULL DEFAULT '{"version":1,"nodes":{}}',
         restored_from_sha  TEXT,
         restored_from_event_id INTEGER,
         remote_head_sha    TEXT,
@@ -1117,6 +1334,8 @@ export class StoryWorkspaceStore {
         restored_from_sha TEXT,
         before_story_json TEXT,
         after_story_json  TEXT,
+        before_layout_json TEXT,
+        after_layout_json  TEXT,
         metadata_json     TEXT NOT NULL DEFAULT '{}',
         created_at INTEGER NOT NULL,
         diff_json  TEXT NOT NULL,
@@ -1124,6 +1343,21 @@ export class StoryWorkspaceStore {
       )
     `);
     this.ensureColumn("story_workspaces", "restored_from_sha", "TEXT");
+    this.ensureColumn(
+      "story_workspaces",
+      "base_layout_json",
+      "TEXT NOT NULL DEFAULT '{\"version\":1,\"nodes\":{}}'"
+    );
+    this.ensureColumn(
+      "story_workspaces",
+      "base_layout_file_exists",
+      "INTEGER NOT NULL DEFAULT 0 CHECK(base_layout_file_exists IN (0, 1))"
+    );
+    this.ensureColumn(
+      "story_workspaces",
+      "working_layout_json",
+      "TEXT NOT NULL DEFAULT '{\"version\":1,\"nodes\":{}}'"
+    );
     this.ensureColumn("story_workspaces", "restored_from_event_id", "INTEGER");
     this.ensureColumn("story_workspaces", "remote_head_sha", "TEXT");
     this.ensureColumn("story_workspaces", "commit_started_at", "INTEGER");
@@ -1143,6 +1377,8 @@ export class StoryWorkspaceStore {
     this.ensureColumn("story_workspace_events", "restored_from_sha", "TEXT");
     this.ensureColumn("story_workspace_events", "before_story_json", "TEXT");
     this.ensureColumn("story_workspace_events", "after_story_json", "TEXT");
+    this.ensureColumn("story_workspace_events", "before_layout_json", "TEXT");
+    this.ensureColumn("story_workspace_events", "after_layout_json", "TEXT");
     this.ensureColumn(
       "story_workspace_events",
       "metadata_json",
@@ -1172,6 +1408,9 @@ function toWorkspace(row: StoryWorkspaceRow): StoryWorkspace {
     baseStory: parseMysteryStoryJson(row.base_story_json),
     baseFileExists: Boolean(row.base_file_exists),
     workingStory: parseMysteryStoryJson(row.working_story_json),
+    baseLayout: parseStoryLayoutJson(row.base_layout_json),
+    baseLayoutFileExists: Boolean(row.base_layout_file_exists),
+    layout: parseStoryLayoutJson(row.working_layout_json),
     restoredFromSha: row.restored_from_sha,
     restoredFromEventId: row.restored_from_event_id,
     remoteHeadSha: row.remote_head_sha,
@@ -1207,6 +1446,61 @@ function parseOptionalStoryJson(value: string | null): MysteryStoryDsl | null {
   return parseMysteryStoryJson(value);
 }
 
+function emptyStoryLayout(): StoryLayout {
+  return { version: 1, nodes: {} };
+}
+
+function normalizeStoryLayout(value: StoryLayout): StoryLayout {
+  const parsed = StoryLayoutSchema.parse(value);
+  return {
+    version: 1,
+    nodes: Object.fromEntries(
+      Object.entries(parsed.nodes).sort(([left], [right]) =>
+        left.localeCompare(right)
+      )
+    ),
+  };
+}
+
+function parseStoryLayoutJson(value: string): StoryLayout {
+  return normalizeStoryLayout(JSON.parse(value) as unknown as StoryLayout);
+}
+
+function parseOptionalLayoutJson(value: string | null): StoryLayout | null {
+  return value ? parseStoryLayoutJson(value) : null;
+}
+
+function serializeStoryLayout(value: StoryLayout): string {
+  const normalized = normalizeStoryLayout(value);
+  if (Object.keys(normalized.nodes).length === 0) return EMPTY_STORY_LAYOUT_JSON;
+  return `${JSON.stringify(normalized, null, 2)}\n`;
+}
+
+function storyLayoutPath(storyPath: string): string {
+  const path = normalizeStoryPath(storyPath);
+  return path.endsWith(".json")
+    ? `${path.slice(0, -".json".length)}.layout.json`
+    : `${path}.layout.json`;
+}
+
+function mergeStoryVersions(versions: GitHubVersion[]): GitHubVersion[] {
+  const unique = new Map<string, { version: GitHubVersion; order: number }>();
+  versions.forEach((version, order) => {
+    if (!unique.has(version.sha)) unique.set(version.sha, { version, order });
+  });
+  return [...unique.values()]
+    .sort((left, right) => {
+      const timeDifference = versionTimestamp(right.version) - versionTimestamp(left.version);
+      return timeDifference || left.order - right.order;
+    })
+    .map(({ version }) => version);
+}
+
+function versionTimestamp(version: GitHubVersion): number {
+  const timestamp = Date.parse(version.authoredAt ?? "");
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
 function parseMetadata(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -1218,9 +1512,16 @@ function parseMetadata(value: string): Record<string, unknown> {
   }
 }
 
+function parseWorkspaceDiff(value: string): StoryWorkspaceDiff {
+  const parsed = JSON.parse(value) as StoryWorkspaceDiff;
+  return { ...parsed, layout: Array.isArray(parsed.layout) ? parsed.layout : [] };
+}
+
 function diffStories(
   before: MysteryStoryDsl,
-  after: MysteryStoryDsl
+  after: MysteryStoryDsl,
+  beforeLayout: StoryLayout = emptyStoryLayout(),
+  afterLayout: StoryLayout = beforeLayout
 ): StoryWorkspaceDiff {
   const beforeJson = serializeMysteryStory(before);
   const afterJson = serializeMysteryStory(after);
@@ -1228,7 +1529,32 @@ function diffStories(
     fileStatus: beforeJson === afterJson ? "unchanged" : "modified",
     business: createStoryBusinessDiff(before, after),
     json: createJsonLineDiff(beforeJson, afterJson),
+    layout: diffStoryLayouts(beforeLayout, afterLayout),
   };
+}
+
+function diffStoryLayouts(
+  before: StoryLayout,
+  after: StoryLayout
+): StoryLayoutDiffItem[] {
+  const ids = new Set([...Object.keys(before.nodes), ...Object.keys(after.nodes)]);
+  return [...ids]
+    .sort((left, right) => left.localeCompare(right))
+    .flatMap((id) => {
+      const beforePosition = before.nodes[id];
+      const afterPosition = after.nodes[id];
+      if (
+        beforePosition?.x === afterPosition?.x &&
+        beforePosition?.y === afterPosition?.y
+      ) {
+        return [];
+      }
+      return [{
+        id,
+        ...(beforePosition ? { before: beforePosition } : {}),
+        ...(afterPosition ? { after: afterPosition } : {}),
+      }];
+    });
 }
 
 const missingValue = Symbol("missing-story-value");
@@ -1251,6 +1577,25 @@ function rebaseStory(
     );
   }
   return MysteryStoryDslSchema.parse(merged);
+}
+
+function rebaseLayout(
+  base: StoryLayout,
+  local: StoryLayout,
+  remote: StoryLayout,
+  previousBaseSha: string,
+  remoteHeadSha: string
+): StoryLayout {
+  const conflicts: string[] = [];
+  const merged = mergeStoryValue(base, local, remote, "/layout", conflicts);
+  if (conflicts.length || merged === missingValue) {
+    throw new StoryWorkspaceRebaseConflictError(
+      previousBaseSha,
+      remoteHeadSha,
+      conflicts.length ? conflicts : ["/layout"]
+    );
+  }
+  return normalizeStoryLayout(merged as StoryLayout);
 }
 
 function mergeStoryValue(

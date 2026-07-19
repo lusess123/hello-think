@@ -3,9 +3,8 @@
   "name": "hello-think",
   // Browser Rendering powers two surfaces: the execute tool's `cdp.*`
   // connector (interactive automation) and the stateless Quick Action tools
-  // Keep Browser Rendering local for development. The selected Cloudflare
-  // account has no workers.dev subdomain, so a remote preview session cannot
-  // be created; AI requests still use the configured AI Gateway below.
+  // Local development uses the local Browser Rendering session; production
+  // still receives the normal BROWSER binding when Wrangler deploys the Worker.
   "browser": { "binding": "BROWSER", "remote": false },
   // 2026-03-24+ is the minimum for the Quick Actions binding (`quickAction`).
   "compatibility_date": "2026-06-11",

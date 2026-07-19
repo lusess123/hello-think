@@ -444,7 +444,7 @@ function SourcePart({
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="inline-flex max-w-[92%] items-center gap-1 rounded-md border border-kumo-line px-2 py-1 text-xs text-kumo-accent hover:underline"
+      className="inline-flex max-w-[92%] items-center gap-1 rounded-md border border-kumo-line px-2 py-1 text-xs text-kumo-brand hover:underline"
     >
       <FileTextIcon size={12} /> {label}
     </a>
@@ -482,7 +482,7 @@ function FilePart({
       href={data}
       target="_blank"
       rel="noreferrer"
-      className="inline-flex items-center gap-2 rounded-lg border border-kumo-line px-3 py-2 text-xs hover:bg-kumo-hover"
+      className="inline-flex items-center gap-2 rounded-lg border border-kumo-line px-3 py-2 text-xs hover:bg-kumo-fill-hover"
     >
       {mimeType === "application/pdf" ? (
         <FilePdfIcon size={18} />
@@ -583,7 +583,7 @@ function ToolPart(props: ToolPartProps) {
       <div className="flex items-center gap-2 mb-2">
         <GearIcon
           size={14}
-          className={running ? "animate-spin text-kumo-accent" : "text-kumo-inactive"}
+          className={running ? "animate-spin text-kumo-brand" : "text-kumo-subtle"}
         />
         <Text size="xs" bold>
           {props.toolName}
@@ -661,7 +661,7 @@ function JsonDetails({
 }) {
   return (
     <details className="font-mono text-xs" open={defaultOpen || undefined}>
-      <summary className="cursor-pointer text-kumo-inactive">{label}</summary>
+      <summary className="cursor-pointer text-kumo-subtle">{label}</summary>
       <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-kumo-subtle">
         {safeJson(value)}
       </pre>
@@ -795,7 +795,7 @@ function ComposerAttachment() {
         {progress !== null && (
           <div className="mt-1 h-1 overflow-hidden rounded bg-kumo-line">
             <div
-              className="h-full bg-kumo-accent transition-[width]"
+              className="h-full bg-kumo-brand transition-[width]"
               style={{ width: `${Math.round(progress * 100)}%` }}
             />
           </div>
@@ -859,13 +859,13 @@ export function AssistantComposer({
       )}
       <div className="max-w-3xl mx-auto px-5 py-4">
         <ComposerPrimitive.AttachmentDropzone disabled={disabled}>
-          <ComposerPrimitive.Root className="rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm transition-shadow focus-within:border-transparent focus-within:ring-2 focus-within:ring-kumo-ring data-[dragging=true]:ring-2 data-[dragging=true]:ring-kumo-accent">
+          <ComposerPrimitive.Root className="rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm transition-shadow focus-within:border-transparent focus-within:ring-2 focus-within:ring-kumo-ring data-[dragging=true]:ring-2 data-[dragging=true]:ring-kumo-focus">
             <VirtualizedComposerAttachments />
             <ComposerPrimitive.Input
               rows={2}
               disabled={disabled}
               placeholder="输入问题，或拖放/粘贴图片、PDF、文本…"
-              className="max-h-48 min-h-12 w-full resize-none bg-transparent text-sm text-kumo-default outline-none placeholder:text-kumo-inactive"
+              className="max-h-48 min-h-12 w-full resize-none bg-transparent text-sm text-kumo-default outline-none placeholder:text-kumo-subtle"
             />
             <div className="mt-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-1">

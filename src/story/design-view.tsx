@@ -3,6 +3,7 @@ import {
   GitDiffIcon,
   MinusIcon,
   PlusIcon,
+  TreeStructureIcon,
   UsersThreeIcon
 } from "@phosphor-icons/react";
 import { Badge, Button } from "@cloudflare/kumo";
@@ -13,6 +14,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent
 } from "react";
 import { VirtualList } from "../components/virtual-list";
@@ -21,6 +23,7 @@ import type {
   StoryBond,
   StoryDiffAction,
   StoryDiffItem,
+  StoryLayout,
   StoryPerson,
   StoryWorkspace,
   TimelineNode
@@ -55,11 +58,14 @@ const RELATION_HEIGHT = 340;
 const FLOW_START_Y = 390;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 1.8;
+const DRAG_THRESHOLD = 4;
+const EMPTY_LAYOUT: StoryLayout = { version: 1, nodes: {} };
 
 interface DesignViewProps {
   workspace: StoryWorkspace;
   disabled: boolean;
   onEdit: (target: StoryEditorTarget) => void;
+  onLayoutChange: (layout: StoryLayout, summary: string) => Promise<boolean>;
 }
 
 interface DisplayPerson {
@@ -93,6 +99,7 @@ interface CanvasIndexItem {
   meta: string;
   target: StoryEditorTarget;
   marker?: StoryDiffMarker;
+  layoutChanged?: boolean;
 }
 
 interface CanvasViewport {
@@ -102,10 +109,59 @@ interface CanvasViewport {
   height: number;
 }
 
-export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
+export function canvasViewportFromMeasurements(
+  measurements: {
+    scrollLeft: number;
+    scrollTop: number;
+    clientWidth: number;
+    clientHeight: number;
+  },
+  activeZoom: number
+): CanvasViewport {
+  return {
+    x: measurements.scrollLeft / activeZoom,
+    y: measurements.scrollTop / activeZoom,
+    width: measurements.clientWidth / activeZoom,
+    height: measurements.clientHeight / activeZoom
+  };
+}
+
+interface NodeDrag {
+  id: string;
+  target: StoryEditorTarget;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  origin: Point;
+  moved: boolean;
+}
+
+interface CanvasPan {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  scrollLeft: number;
+  scrollTop: number;
+  moved: boolean;
+}
+
+export function DesignView({
+  workspace,
+  disabled,
+  onEdit,
+  onLayoutChange
+}: DesignViewProps) {
   const story = workspace.story;
   const diffItems = workspace.diff.items;
   const viewportRef = useRef<HTMLDivElement>(null);
+  const nodeDragRef = useRef<NodeDrag | null>(null);
+  const canvasPanRef = useRef<CanvasPan | null>(null);
+  const pendingNodePositionRef = useRef<Point | null>(null);
+  const suppressCanvasClickRef = useRef(false);
+  const viewportStorageReadyRef = useRef(false);
+  const spacePressedRef = useRef(false);
+  const [previewLayout, setPreviewLayout] = useState<StoryLayout | null>(null);
+  const [interaction, setInteraction] = useState<"idle" | "node" | "pan">("idle");
   const [zoom, setZoom] = useState(1);
   const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>({
     x: 0,
@@ -125,37 +181,101 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
     () => displayTimeline(story.storyline.timeline, diffItems),
     [diffItems, story.storyline.timeline]
   );
+  const activeLayout = previewLayout ?? workspace.layout ?? EMPTY_LAYOUT;
   const layout = useMemo(
-    () => createCanvasLayout(people, timeline, story.storyline.opening),
-    [people, story.storyline.opening, timeline]
+    () =>
+      createCanvasLayout(
+        people,
+        timeline,
+        story.storyline.opening,
+        activeLayout
+      ),
+    [activeLayout, people, story.storyline.opening, timeline]
+  );
+  const layoutChangedNodes = useMemo(
+    () => new Set((workspace.layoutDiff ?? []).map((item) => item.id)),
+    [workspace.layoutDiff]
   );
   const indexItems = useMemo(
     () => createCanvasIndex(workspace, people, bonds, timeline),
     [bonds, people, timeline, workspace]
   );
+  const viewportStorageKey = `hello-think:story-viewport:${workspace.branch}:${workspace.storyPath ?? "story"}`;
 
-  const syncCanvasViewport = useCallback(() => {
+  useEffect(() => {
+    const drag = nodeDragRef.current;
+    const point = pendingNodePositionRef.current;
+    if (!drag) {
+      setPreviewLayout(null);
+      return;
+    }
+    if (!point) return;
+    setPreviewLayout(
+      mergeDraggedNodeLayout(
+        workspace.layout ?? EMPTY_LAYOUT,
+        drag.id,
+        point,
+        currentLayoutNodeIds(people, timeline)
+      )
+    );
+  }, [people, timeline, workspace.layout, workspace.revision]);
+
+  const syncCanvasViewport = useCallback((activeZoom: number) => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    setCanvasViewport({
-      x: viewport.scrollLeft / zoom,
-      y: viewport.scrollTop / zoom,
-      width: viewport.clientWidth / zoom,
-      height: viewport.clientHeight / zoom
+    setCanvasViewport(canvasViewportFromMeasurements(viewport, activeZoom));
+  }, []);
+
+  useEffect(() => {
+    viewportStorageReadyRef.current = false;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    let saved: { x?: number; y?: number; zoom?: number } = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(viewportStorageKey) ?? "{}") as typeof saved;
+    } catch {
+      saved = {};
+    }
+    const nextZoom = clamp(Number(saved.zoom) || 1, MIN_ZOOM, MAX_ZOOM);
+    setZoom(nextZoom);
+    const frame = window.requestAnimationFrame(() => {
+      viewport.scrollTo({
+        left: Math.max(0, Number(saved.x) || 0) * nextZoom,
+        top: Math.max(0, Number(saved.y) || 0) * nextZoom
+      });
+      viewportStorageReadyRef.current = true;
+      syncCanvasViewport(nextZoom);
     });
-  }, [zoom]);
+    return () => window.cancelAnimationFrame(frame);
+  }, [syncCanvasViewport, viewportStorageKey]);
+
+  useEffect(() => {
+    if (!viewportStorageReadyRef.current) return;
+    try {
+      localStorage.setItem(
+        viewportStorageKey,
+        JSON.stringify({
+          x: Math.round(canvasViewport.x),
+          y: Math.round(canvasViewport.y),
+          zoom
+        })
+      );
+    } catch {
+      // Private browsing can reject storage; the canvas remains fully usable.
+    }
+  }, [canvasViewport.x, canvasViewport.y, viewportStorageKey, zoom]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    const observer = new ResizeObserver(syncCanvasViewport);
+    const observer = new ResizeObserver(() => syncCanvasViewport(zoom));
     observer.observe(viewport);
-    const frame = window.requestAnimationFrame(syncCanvasViewport);
+    const frame = window.requestAnimationFrame(() => syncCanvasViewport(zoom));
     return () => {
       observer.disconnect();
       window.cancelAnimationFrame(frame);
     };
-  }, [layout.height, layout.width, syncCanvasViewport]);
+  }, [layout.height, layout.width, syncCanvasViewport, zoom]);
 
   const zoomAround = (
     nextValue: number,
@@ -175,7 +295,7 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
         left: baseX * nextZoom - offsetX,
         top: baseY * nextZoom - offsetY
       });
-      syncCanvasViewport();
+      syncCanvasViewport(nextZoom);
     });
   };
 
@@ -193,7 +313,7 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
     setZoom(nextZoom);
     window.requestAnimationFrame(() => {
       viewport.scrollTo({ top: 0, left: 0, behavior: "smooth" });
-      syncCanvasViewport();
+      syncCanvasViewport(nextZoom);
     });
   };
 
@@ -204,8 +324,241 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
       left: x * zoom - viewport.clientWidth / 2,
       top: y * zoom - viewport.clientHeight / 2
     });
-    window.requestAnimationFrame(syncCanvasViewport);
+    window.requestAnimationFrame(() => syncCanvasViewport(zoom));
   };
+
+  const beginNodeDrag = (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactPointerEvent<SVGGElement>
+  ) => {
+    if (
+      disabled ||
+      event.button !== 0 ||
+      spacePressedRef.current ||
+      !currentLayoutNodeIds(people, timeline).has(id)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    viewportRef.current?.setPointerCapture(event.pointerId);
+    nodeDragRef.current = {
+      id,
+      target,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      origin,
+      moved: false
+    };
+    setInteraction("node");
+  };
+
+  const beginCanvasPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (disabled || (event.button !== 0 && event.button !== 1)) return;
+    const target = event.target as Element;
+    if (
+      target.closest('[data-story-interactive="true"]') &&
+      !spacePressedRef.current &&
+      event.button !== 1
+    ) {
+      return;
+    }
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    event.preventDefault();
+    viewport.setPointerCapture(event.pointerId);
+    canvasPanRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      scrollLeft: viewport.scrollLeft,
+      scrollTop: viewport.scrollTop,
+      moved: false
+    };
+    setInteraction("pan");
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const viewport = viewportRef.current;
+    const pan = canvasPanRef.current;
+    if (viewport && pan?.pointerId === event.pointerId) {
+      if (
+        Math.hypot(
+          event.clientX - pan.startClientX,
+          event.clientY - pan.startClientY
+        ) >= DRAG_THRESHOLD
+      ) {
+        pan.moved = true;
+      }
+      viewport.scrollLeft = pan.scrollLeft - (event.clientX - pan.startClientX);
+      viewport.scrollTop = pan.scrollTop - (event.clientY - pan.startClientY);
+      syncCanvasViewport(zoom);
+      return;
+    }
+
+    const drag = nodeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const clientDeltaX = event.clientX - drag.startClientX;
+    const clientDeltaY = event.clientY - drag.startClientY;
+    if (!drag.moved && Math.hypot(clientDeltaX, clientDeltaY) < DRAG_THRESHOLD) {
+      return;
+    }
+    drag.moved = true;
+    const nextPoint = constrainNodePosition(drag.id, {
+      x: Math.round(drag.origin.x + clientDeltaX / zoom),
+      y: Math.round(drag.origin.y + clientDeltaY / zoom)
+    });
+    const nextLayout = mergeDraggedNodeLayout(
+      workspace.layout ?? EMPTY_LAYOUT,
+      drag.id,
+      nextPoint,
+      currentLayoutNodeIds(people, timeline)
+    );
+    pendingNodePositionRef.current = nextLayout ? nextPoint : null;
+    setPreviewLayout(nextLayout);
+  };
+
+  const finishPointerInteraction = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const viewport = viewportRef.current;
+    const pan = canvasPanRef.current;
+    if (pan?.pointerId === event.pointerId) {
+      canvasPanRef.current = null;
+      if (pan.moved) {
+        suppressCanvasClickRef.current = true;
+        window.setTimeout(() => {
+          suppressCanvasClickRef.current = false;
+        }, 0);
+      }
+      setInteraction("idle");
+      if (viewport?.hasPointerCapture(event.pointerId)) {
+        viewport.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
+
+    const drag = nodeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    nodeDragRef.current = null;
+    setInteraction("idle");
+    if (viewport?.hasPointerCapture(event.pointerId)) {
+      viewport.releasePointerCapture(event.pointerId);
+    }
+    if (!drag.moved) {
+      setPreviewLayout(null);
+      pendingNodePositionRef.current = null;
+      onEdit(drag.target);
+      return;
+    }
+    const nextPoint = pendingNodePositionRef.current;
+    pendingNodePositionRef.current = null;
+    const nextLayout = nextPoint
+      ? mergeDraggedNodeLayout(
+          workspace.layout ?? EMPTY_LAYOUT,
+          drag.id,
+          nextPoint,
+          currentLayoutNodeIds(people, timeline)
+        )
+      : null;
+    if (!nextLayout) {
+      setPreviewLayout(null);
+      return;
+    }
+    setPreviewLayout(nextLayout);
+    void onLayoutChange(nextLayout, `移动 ${canvasNodeLabel(drag.id)}`).finally(() => {
+      setPreviewLayout(null);
+    });
+  };
+
+  const cancelPointerInteraction = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (
+      nodeDragRef.current?.pointerId !== event.pointerId &&
+      canvasPanRef.current?.pointerId !== event.pointerId
+    ) {
+      return;
+    }
+    nodeDragRef.current = null;
+    canvasPanRef.current = null;
+    pendingNodePositionRef.current = null;
+    setPreviewLayout(null);
+    setInteraction("idle");
+  };
+
+  const autoLayout = () => {
+    if (disabled) return;
+    if (Object.keys(workspace.layout?.nodes ?? {}).length === 0) {
+      fitCanvas();
+      return;
+    }
+    setPreviewLayout(EMPTY_LAYOUT);
+    void onLayoutChange(EMPTY_LAYOUT, "自动布局全部节点").finally(() => {
+      setPreviewLayout(null);
+      window.requestAnimationFrame(fitCanvas);
+    });
+  };
+
+  const handleNodeKeyDown = (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactKeyboardEvent<SVGGElement>
+  ) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onEdit(target);
+      return;
+    }
+    if (disabled || !event.key.startsWith("Arrow")) return;
+    const direction = {
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 }
+    }[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 36 : 12;
+    const nextPoint = constrainNodePosition(id, {
+      x: origin.x + direction.x * step,
+      y: origin.y + direction.y * step
+    });
+    const nextLayout = mergeDraggedNodeLayout(
+      workspace.layout ?? EMPTY_LAYOUT,
+      id,
+      nextPoint,
+      currentLayoutNodeIds(people, timeline)
+    );
+    if (!nextLayout) return;
+    setPreviewLayout(nextLayout);
+    void onLayoutChange(nextLayout, `移动 ${canvasNodeLabel(id)}`).finally(() => {
+      setPreviewLayout(null);
+    });
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || isEditableElement(event.target)) return;
+      spacePressedRef.current = true;
+      event.preventDefault();
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space") return;
+      spacePressedRef.current = false;
+    };
+    const handleBlur = () => {
+      spacePressedRef.current = false;
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -267,6 +620,16 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
         <div className="ml-auto flex items-center gap-1 rounded-md border border-kumo-line bg-kumo-elevated p-0.5">
           <Button
             size="xs"
+            variant="ghost"
+            aria-label="自动排列全部节点"
+            disabled={disabled}
+            icon={<TreeStructureIcon size={10} />}
+            onClick={autoLayout}
+          >
+            自动布局
+          </Button>
+          <Button
+            size="xs"
             shape="square"
             variant="ghost"
             aria-label="缩小画板"
@@ -302,9 +665,24 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
         <div className="story-design-canvas-shell relative min-h-0 min-w-0 overflow-hidden">
           <div
             ref={viewportRef}
-            className="story-design-canvas-viewport h-full min-h-72 min-w-0 overflow-auto bg-kumo-elevated/40"
-            aria-label="故事设计画板滚动区域；滚轮缩放"
-            onScroll={syncCanvasViewport}
+            className={`story-design-canvas-viewport h-full min-h-72 min-w-0 touch-none overflow-auto bg-kumo-elevated/40 select-none ${
+              interaction === "pan"
+                ? "cursor-grabbing"
+                : interaction === "node"
+                  ? "cursor-move"
+                  : "cursor-grab"
+            }`}
+            aria-label="故事设计画板；拖动空白区域平移，滚轮缩放，拖动节点调整布局"
+            onScroll={() => syncCanvasViewport(zoom)}
+            onPointerDown={beginCanvasPan}
+            onPointerMove={handlePointerMove}
+            onPointerUp={finishPointerInteraction}
+            onPointerCancel={cancelPointerInteraction}
+            onClickCapture={(event) => {
+              if (!suppressCanvasClickRef.current) return;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
           >
             <StoryCanvas
               workspace={workspace}
@@ -313,6 +691,9 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
               timeline={timeline}
               layout={layout}
               zoom={zoom}
+              layoutChangedNodes={layoutChangedNodes}
+              onNodePointerDown={beginNodeDrag}
+              onNodeKeyDown={handleNodeKeyDown}
               onEdit={onEdit}
             />
           </div>
@@ -346,18 +727,21 @@ export function DesignView({ workspace, disabled, onEdit }: DesignViewProps) {
               <button
                 type="button"
                 disabled={disabled}
-                className={`w-full border-b border-kumo-line px-2 py-2 text-left transition-colors hover:bg-kumo-hover disabled:opacity-50 ${storyDiffSurface(item.marker?.action)}`}
+                className={`w-full border-b border-kumo-line px-2 py-2 text-left transition-colors hover:bg-kumo-fill-hover disabled:opacity-50 ${storyDiffSurface(item.marker?.action ?? (item.layoutChanged ? "modified" : undefined))}`}
                 onClick={() => onEdit(item.target)}
               >
                 <span className="flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-kumo-default">
                     {item.label}
                   </span>
-                  {item.marker && (
-                    <StoryDiffBadge
-                      action={item.marker.action}
-                      fields={item.marker.fields}
-                    />
+                  {canvasNodeDiffMarkers(item.marker, Boolean(item.layoutChanged)).map(
+                    (marker, index) => (
+                      <StoryDiffBadge
+                        key={`${marker.item.category ?? "layout"}:${index}`}
+                        action={marker.action}
+                        fields={marker.fields}
+                      />
+                    )
                   )}
                 </span>
                 <span className="mt-1 block truncate font-mono text-[9px] text-kumo-subtle">
@@ -379,6 +763,9 @@ function StoryCanvas({
   timeline,
   layout,
   zoom,
+  layoutChangedNodes,
+  onNodePointerDown,
+  onNodeKeyDown,
   onEdit
 }: {
   workspace: StoryWorkspace;
@@ -387,6 +774,19 @@ function StoryCanvas({
   timeline: DisplayTimeline[];
   layout: CanvasLayout;
   zoom: number;
+  layoutChangedNodes: Set<string>;
+  onNodePointerDown: (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactPointerEvent<SVGGElement>
+  ) => void;
+  onNodeKeyDown: (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactKeyboardEvent<SVGGElement>
+  ) => void;
   onEdit: (target: StoryEditorTarget) => void;
 }) {
   const markerId = `story-arrow-${useId().replaceAll(":", "")}`;
@@ -395,7 +795,7 @@ function StoryCanvas({
 
   return (
     <svg
-      role="img"
+      role="group"
       aria-label="人物关系与剧情流程设计画板"
       width={layout.width * zoom}
       height={layout.height * zoom}
@@ -418,8 +818,8 @@ function StoryCanvas({
           <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
         </marker>
       </defs>
-      <rect width={layout.width} height={layout.height} className="fill-kumo-elevated" />
-      <rect width={layout.width} height={layout.height} fill={`url(#${patternId})`} />
+      <rect data-canvas-background="true" width={layout.width} height={layout.height} className="fill-kumo-elevated" />
+      <rect data-canvas-background="true" width={layout.width} height={layout.height} fill={`url(#${patternId})`} />
 
       <text x="24" y="30" className="fill-kumo-default" fontSize="12" fontWeight="650">
         人物关系区
@@ -432,7 +832,10 @@ function StoryCanvas({
         bonds={bonds}
         positions={layout.people}
         diffItems={diffItems}
+        layoutChangedNodes={layoutChangedNodes}
         markerId={markerId}
+        onNodePointerDown={onNodePointerDown}
+        onNodeKeyDown={onNodeKeyDown}
         onEdit={onEdit}
       />
 
@@ -447,7 +850,10 @@ function StoryCanvas({
         workspace={workspace}
         timeline={timeline}
         layout={layout}
+        layoutChangedNodes={layoutChangedNodes}
         markerId={markerId}
+        onNodePointerDown={onNodePointerDown}
+        onNodeKeyDown={onNodeKeyDown}
         onEdit={onEdit}
       />
     </svg>
@@ -503,11 +909,29 @@ function StoryMiniMap({
         MINIMAP · 点击 / 拖动
       </div>
       <svg
-        role="img"
-        aria-label="故事画板小地图；点击或拖动平移视口"
+        role="application"
+        tabIndex={0}
+        aria-label="故事画板小地图；点击或拖动定位，方向键平移视口"
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
         viewBox={`0 0 ${layout.width} ${layout.height}`}
         preserveAspectRatio="none"
-        className="block h-28 w-44 cursor-crosshair touch-none bg-kumo-elevated"
+        className="story-canvas-interactive block h-28 w-44 cursor-crosshair touch-none bg-kumo-elevated outline-none"
+        onKeyDown={(event) => {
+          const direction = {
+            ArrowUp: { x: 0, y: -1 },
+            ArrowDown: { x: 0, y: 1 },
+            ArrowLeft: { x: -1, y: 0 },
+            ArrowRight: { x: 1, y: 0 }
+          }[event.key];
+          if (!direction) return;
+          event.preventDefault();
+          const stepX = Math.max(24, visibleViewport.width * 0.15);
+          const stepY = Math.max(24, visibleViewport.height * 0.15);
+          onNavigate(
+            visibleViewport.x + visibleViewport.width / 2 + direction.x * stepX,
+            visibleViewport.y + visibleViewport.height / 2 + direction.y * stepY
+          );
+        }}
         onPointerDown={(event) => {
           const point = pointerPosition(event);
           const insideViewport =
@@ -576,7 +1000,7 @@ function StoryMiniMap({
               cx={position.x}
               cy={position.y}
               r="18"
-              className="fill-kumo-accent"
+              className="fill-kumo-brand"
             />
           );
         })}
@@ -615,7 +1039,7 @@ function StoryMiniMap({
           width={layout.opening.width}
           height={layout.opening.height}
           rx="8"
-          className="fill-kumo-accent"
+          className="fill-kumo-brand"
           opacity="0.58"
         />
         {timeline.map((entry) => {
@@ -629,7 +1053,7 @@ function StoryMiniMap({
               width={box.width}
               height={box.height}
               rx="8"
-              className={entry.node.parallel ? "fill-kumo-warning" : "fill-kumo-accent"}
+              className={entry.node.parallel ? "fill-kumo-warning" : "fill-kumo-brand"}
               opacity="0.8"
             />
           );
@@ -639,7 +1063,7 @@ function StoryMiniMap({
           y={visibleViewport.y}
           width={visibleViewport.width}
           height={visibleViewport.height}
-          className="fill-kumo-accent stroke-kumo-brand"
+          className="fill-kumo-brand stroke-kumo-brand"
           fillOpacity="0.12"
           strokeWidth="2"
           vectorEffect="non-scaling-stroke"
@@ -654,19 +1078,35 @@ function RelationshipLayer({
   bonds,
   positions,
   diffItems,
+  layoutChangedNodes,
   markerId,
+  onNodePointerDown,
+  onNodeKeyDown,
   onEdit
 }: {
   people: DisplayPerson[];
   bonds: DisplayBond[];
   positions: Map<string, Point>;
   diffItems: StoryDiffItem[];
+  layoutChangedNodes: Set<string>;
   markerId: string;
+  onNodePointerDown: (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactPointerEvent<SVGGElement>
+  ) => void;
+  onNodeKeyDown: (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactKeyboardEvent<SVGGElement>
+  ) => void;
   onEdit: (target: StoryEditorTarget) => void;
 }) {
   if (people.length === 0) {
     return (
-      <g className="fill-kumo-inactive">
+      <g className="fill-kumo-subtle">
         <UsersThreeIcon x={338} y={157} size={18} />
         <text x="365" y="170" fontFamily="ui-monospace, monospace" fontSize="10">
           添加人物后生成关系图
@@ -682,18 +1122,26 @@ function RelationshipLayer({
         const target = positions.get(entry.bond.target);
         if (!source || !target) return null;
         const marker = storyDiffMarker(diffItems, "bonds", entry.key);
+        const positionChanged =
+          layoutChangedNodes.has(`person:${entry.bond.source}`) ||
+          layoutChangedNodes.has(`person:${entry.bond.target}`);
         const midpoint = {
           x: (source.x + target.x) / 2,
           y: (source.y + target.y) / 2
         };
-        const strokeClass = diffStroke(marker?.action, "story-stroke-default");
+        const strokeClass = diffStroke(
+          marker?.action ?? (positionChanged ? "modified" : undefined),
+          "story-stroke-default"
+        );
         return (
           <g
             key={entry.key}
             role="button"
             tabIndex={0}
+            data-story-interactive="true"
             aria-label={`编辑关系 ${entry.key}`}
-            className="cursor-pointer outline-none"
+            aria-keyshortcuts="Enter Space"
+            className="story-canvas-interactive cursor-pointer outline-none"
             onClick={() => onEdit({ kind: "bond", key: entry.key })}
             onKeyDown={(event) => activateFromKeyboard(event, () => onEdit({ kind: "bond", key: entry.key }))}
           >
@@ -748,15 +1196,31 @@ function RelationshipLayer({
         const person = entry.person;
         const position = positions.get(person.key)!;
         const marker = storyDiffMarker(diffItems, "cast", person.key);
+        const target = { kind: "person", key: person.key } as const;
+        const layoutId = `person:${person.key}`;
+        const markers = canvasNodeDiffMarkers(
+          marker,
+          layoutChangedNodes.has(layoutId)
+        );
+        const visualMarker = markers[0];
         return (
           <g
             key={person.key}
             role="button"
             tabIndex={0}
+            data-story-interactive="true"
             aria-label={`编辑人物 ${person.name}`}
-            className="cursor-pointer outline-none"
-            onClick={() => onEdit({ kind: "person", key: person.key })}
-            onKeyDown={(event) => activateFromKeyboard(event, () => onEdit({ kind: "person", key: person.key }))}
+            aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space"
+            className={entry.removed
+              ? "story-canvas-interactive cursor-pointer outline-none"
+              : "story-canvas-interactive cursor-grab outline-none active:cursor-grabbing"}
+            onClick={entry.removed ? () => onEdit(target) : undefined}
+            onPointerDown={entry.removed
+              ? undefined
+              : (event) => onNodePointerDown(layoutId, target, position, event)}
+            onKeyDown={(event) => entry.removed
+              ? activateFromKeyboard(event, () => onEdit(target))
+              : onNodeKeyDown(layoutId, target, position, event)}
           >
             <rect
               x={position.x - 68}
@@ -764,22 +1228,22 @@ function RelationshipLayer({
               width="136"
               height="58"
               rx="6"
-              className={`fill-kumo-base ${diffStroke(marker?.action, "stroke-kumo-line")}`}
-              strokeWidth={marker ? 2.3 : 1.2}
-              strokeDasharray={marker?.action === "removed" ? "5 4" : undefined}
+              className={`fill-kumo-base ${diffStroke(visualMarker?.action, "stroke-kumo-line")}`}
+              strokeWidth={visualMarker ? 2.3 : 1.2}
+              strokeDasharray={visualMarker?.action === "removed" ? "5 4" : undefined}
             />
-            <circle cx={position.x - 49} cy={position.y} r="9" className={marker ? diffFill(marker.action) : "fill-kumo-tint"} />
+            <circle cx={position.x - 49} cy={position.y} r="9" className={visualMarker ? diffFill(visualMarker.action) : "fill-kumo-tint"} />
             <text x={position.x - 34} y={position.y - 5} className="fill-kumo-default" fontSize="10" fontWeight="600">
               {truncate(person.name, 9)}
             </text>
             <text x={position.x - 34} y={position.y + 11} className="fill-kumo-subtle" fontFamily="ui-monospace, monospace" fontSize="7.5">
               {truncate(person.identity, 17)}
             </text>
-            {marker && (
-              <text x={position.x} y={position.y + 42} textAnchor="middle" className={diffFill(marker.action)} fontFamily="ui-monospace, monospace" fontSize="7.5">
-                {diffText(marker)}
+            {markers.map((diffMarker, index) => (
+              <text key={`${diffMarker.item.category ?? "layout"}:${index}`} x={position.x} y={position.y + 42 + index * 10} textAnchor="middle" className={diffFill(diffMarker.action)} fontFamily="ui-monospace, monospace" fontSize="7.5">
+                {diffText(diffMarker)}
               </text>
-            )}
+            ))}
           </g>
         );
       })}
@@ -791,17 +1255,38 @@ function StoryFlowLayer({
   workspace,
   timeline,
   layout,
+  layoutChangedNodes,
   markerId,
+  onNodePointerDown,
+  onNodeKeyDown,
   onEdit
 }: {
   workspace: StoryWorkspace;
   timeline: DisplayTimeline[];
   layout: CanvasLayout;
+  layoutChangedNodes: Set<string>;
   markerId: string;
+  onNodePointerDown: (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactPointerEvent<SVGGElement>
+  ) => void;
+  onNodeKeyDown: (
+    id: string,
+    target: StoryEditorTarget,
+    origin: Point,
+    event: ReactKeyboardEvent<SVGGElement>
+  ) => void;
   onEdit: (target: StoryEditorTarget) => void;
 }) {
   const diffItems = workspace.diff.items;
   const openingMarker = storyDiffMarker(diffItems, "story", "storyline");
+  const openingMarkers = canvasNodeDiffMarkers(
+    openingMarker,
+    layoutChangedNodes.has("opening")
+  );
+  const openingVisualMarker = openingMarkers[0];
   const openingBox = layout.opening;
   const edges = createFlowEdges(timeline, layout, workspace.story.storyline.opening, diffItems);
 
@@ -810,10 +1295,24 @@ function StoryFlowLayer({
       <g
         role="button"
         tabIndex={0}
+        data-story-interactive="true"
         aria-label={`编辑开场入口 ${workspace.story.storyline.opening}`}
-        className="cursor-pointer outline-none"
-        onClick={() => onEdit({ kind: "opening" })}
-        onKeyDown={(event) => activateFromKeyboard(event, () => onEdit({ kind: "opening" }))}
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space"
+        className="story-canvas-interactive cursor-grab outline-none active:cursor-grabbing"
+        onPointerDown={(event) =>
+          onNodePointerDown(
+            "opening",
+            { kind: "opening" },
+            { x: openingBox.x, y: openingBox.y },
+            event
+          )
+        }
+        onKeyDown={(event) => onNodeKeyDown(
+          "opening",
+          { kind: "opening" },
+          { x: openingBox.x, y: openingBox.y },
+          event
+        )}
       >
         <rect
           x={openingBox.x}
@@ -821,20 +1320,20 @@ function StoryFlowLayer({
           width={openingBox.width}
           height={openingBox.height}
           rx="8"
-          className={`fill-kumo-base ${diffStroke(openingMarker?.action, "stroke-kumo-brand")}`}
-          strokeWidth={openingMarker ? 2.4 : 1.4}
+          className={`fill-kumo-base ${diffStroke(openingVisualMarker?.action, "stroke-kumo-brand")}`}
+          strokeWidth={openingVisualMarker ? 2.4 : 1.4}
         />
-        <text x={openingBox.x + 15} y={openingBox.y + 21} className="fill-kumo-accent" fontFamily="ui-monospace, monospace" fontSize="8" fontWeight="700">
+        <text x={openingBox.x + 15} y={openingBox.y + 21} className="fill-kumo-brand" fontFamily="ui-monospace, monospace" fontSize="8" fontWeight="700">
           OPENING
         </text>
         <text x={openingBox.x + 15} y={openingBox.y + 40} className="fill-kumo-default" fontFamily="ui-monospace, monospace" fontSize="9.5">
           {truncate(workspace.story.storyline.opening, 14)}
         </text>
-        {openingMarker && (
-          <text x={openingBox.x + openingBox.width + 9} y={openingBox.y + openingBox.height / 2 + 2} className={diffFill(openingMarker.action)} fontFamily="ui-monospace, monospace" fontSize="7">
-            {diffText(openingMarker)}
+        {openingMarkers.map((diffMarker, index) => (
+          <text key={`${diffMarker.item.category ?? "layout"}:${index}`} x={openingBox.x + openingBox.width + 9} y={openingBox.y + openingBox.height / 2 + 2 + (index - (openingMarkers.length - 1) / 2) * 10} className={diffFill(diffMarker.action)} fontFamily="ui-monospace, monospace" fontSize="7">
+            {diffText(diffMarker)}
           </text>
-        )}
+        ))}
       </g>
 
       {edges.map((edge) => (
@@ -847,15 +1346,31 @@ function StoryFlowLayer({
         if (!box) return null;
         const marker = storyDiffMarker(diffItems, "timeline", node.key);
         const target = { kind: "timeline", key: node.key } as const;
+        const layoutId = `timeline:${node.key}`;
+        const markers = canvasNodeDiffMarkers(
+          marker,
+          layoutChangedNodes.has(layoutId)
+        );
+        const visualMarker = markers[0];
         return (
           <g
             key={node.key}
             role="button"
             tabIndex={0}
+            data-story-interactive="true"
             aria-label={`编辑剧情节点 ${node.key}`}
-            className="cursor-pointer outline-none"
-            onClick={() => onEdit(target)}
-            onKeyDown={(event) => activateFromKeyboard(event, () => onEdit(target))}
+            aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space"
+            className={entry.removed
+              ? "story-canvas-interactive cursor-pointer outline-none"
+              : "story-canvas-interactive cursor-grab outline-none active:cursor-grabbing"}
+            onClick={entry.removed ? () => onEdit(target) : undefined}
+            onPointerDown={entry.removed
+              ? undefined
+              : (event) =>
+                  onNodePointerDown(layoutId, target, { x: box.x, y: box.y }, event)}
+            onKeyDown={(event) => entry.removed
+              ? activateFromKeyboard(event, () => onEdit(target))
+              : onNodeKeyDown(layoutId, target, { x: box.x, y: box.y }, event)}
           >
             <rect
               x={box.x}
@@ -863,13 +1378,13 @@ function StoryFlowLayer({
               width={box.width}
               height={box.height}
               rx="7"
-              className={`fill-kumo-base ${diffStroke(marker?.action, "stroke-kumo-line")}`}
-              strokeWidth={marker ? 2.4 : 1.3}
-              strokeDasharray={marker?.action === "removed" ? "6 4" : undefined}
+              className={`fill-kumo-base ${diffStroke(visualMarker?.action, "stroke-kumo-line")}`}
+              strokeWidth={visualMarker ? 2.4 : 1.3}
+              strokeDasharray={visualMarker?.action === "removed" ? "6 4" : undefined}
             />
             <rect x={box.x} y={box.y} width={box.width} height="31" rx="7" className="fill-kumo-tint" opacity="0.72" />
             <line x1={box.x} y1={box.y + 31} x2={box.x + box.width} y2={box.y + 31} className="stroke-kumo-line" />
-            <text x={box.x + 10} y={box.y + 19} className="fill-kumo-accent" fontFamily="ui-monospace, monospace" fontSize="9.5" fontWeight="650">
+            <text x={box.x + 10} y={box.y + 19} className="fill-kumo-brand" fontFamily="ui-monospace, monospace" fontSize="9.5" fontWeight="650">
               {truncate(node.key, 20)}
             </text>
             <text x={box.x + box.width - 10} y={box.y + 19} textAnchor="end" className="fill-kumo-subtle" fontFamily="ui-monospace, monospace" fontSize="8">
@@ -877,9 +1392,9 @@ function StoryFlowLayer({
             </text>
 
             {node.parallel ? (
-              <ParallelNodeBody node={node} box={box} layout={layout} marker={marker} />
+              <ParallelNodeBody node={node} box={box} layout={layout} markers={markers} />
             ) : (
-              <NormalNodeBody node={node} box={box} marker={marker} />
+              <NormalNodeBody node={node} box={box} markers={markers} />
             )}
           </g>
         );
@@ -891,11 +1406,11 @@ function StoryFlowLayer({
 function NormalNodeBody({
   node,
   box,
-  marker
+  markers
 }: {
   node: TimelineNode;
   box: NodeBox;
-  marker?: StoryDiffMarker;
+  markers: StoryDiffMarker[];
 }) {
   return (
     <g>
@@ -905,14 +1420,14 @@ function NormalNodeBody({
       <text x={box.x + 10} y={box.y + 67} className="fill-kumo-subtle" fontFamily="ui-monospace, monospace" fontSize="7.5">
         {node.actor ? `actor / ${truncate(node.actor, 18)}` : node.actors?.length ? `actors / ${node.actors.length}` : "actor / —"}
       </text>
-      <text x={box.x + 10} y={box.y + 84} className="fill-kumo-inactive" fontFamily="ui-monospace, monospace" fontSize="7.5">
+      <text x={box.x + 10} y={box.y + 84} className="fill-kumo-subtle" fontFamily="ui-monospace, monospace" fontSize="7.5">
         {node.routes ? `${Object.keys(node.routes).length} ROUTES` : node.next ? `NEXT / ${truncate(node.next, 15)}` : node.end ? "END" : "NO EXIT"}
       </text>
-      {marker && (
-        <text x={box.x + 10} y={box.y + box.height - 8} className={diffFill(marker.action)} fontFamily="ui-monospace, monospace" fontSize="7">
+      {markers.map((marker, index) => (
+        <text key={`${marker.item.category ?? "layout"}:${index}`} x={box.x + 10} y={box.y + box.height - 8 - (markers.length - index - 1) * 9} className={diffFill(marker.action)} fontFamily="ui-monospace, monospace" fontSize="7">
           {diffText(marker)}
         </text>
-      )}
+      ))}
     </g>
   );
 }
@@ -921,12 +1436,12 @@ function ParallelNodeBody({
   node,
   box,
   layout,
-  marker
+  markers
 }: {
   node: TimelineNode;
   box: NodeBox;
   layout: CanvasLayout;
-  marker?: StoryDiffMarker;
+  markers: StoryDiffMarker[];
 }) {
   return (
     <g>
@@ -949,11 +1464,11 @@ function ParallelNodeBody({
           </g>
         );
       })}
-      {marker && (
-        <text x={box.x + 10} y={box.y + box.height - 7} className={diffFill(marker.action)} fontFamily="ui-monospace, monospace" fontSize="7">
+      {markers.map((marker, index) => (
+        <text key={`${marker.item.category ?? "layout"}:${index}`} x={box.x + 10} y={box.y + box.height - 7 - (markers.length - index - 1) * 9} className={diffFill(marker.action)} fontFamily="ui-monospace, monospace" fontSize="7">
           {diffText(marker)}
         </text>
-      )}
+      ))}
     </g>
   );
 }
@@ -995,8 +1510,10 @@ function FlowEdgeView({
     <g
       role="button"
       tabIndex={0}
+      data-story-interactive="true"
       aria-label={`编辑${edge.kind === "route" ? "分支" : edge.kind === "dependency" ? "依赖" : "流程边"}${edge.label ? ` ${edge.label}` : ""}`}
-      className="cursor-pointer outline-none"
+      aria-keyshortcuts="Enter Space"
+      className="story-canvas-interactive cursor-pointer outline-none"
       onClick={() => onEdit(edge.target)}
       onKeyDown={(event) => activateFromKeyboard(event, () => onEdit(edge.target))}
     >
@@ -1064,7 +1581,8 @@ function FlowEdgeView({
 function createCanvasLayout(
   people: DisplayPerson[],
   timeline: DisplayTimeline[],
-  opening: string
+  opening: string,
+  savedLayout: StoryLayout
 ): CanvasLayout {
   const tree = createStoryTreeLayout(
     timeline.map((entry) => entry.node),
@@ -1077,16 +1595,72 @@ function createCanvasLayout(
   const radiusY = people.length < 3 ? 76 : 105;
   people.forEach((entry, index) => {
     const angle = (Math.PI * 2 * index) / Math.max(1, people.length) - Math.PI / 2;
-    peoplePositions.set(entry.person.key, {
+    const automatic = {
       x: relationCenter.x + Math.cos(angle) * radiusX,
       y: relationCenter.y + Math.sin(angle) * radiusY
-    });
+    };
+    peoplePositions.set(
+      entry.person.key,
+      validPoint(savedLayout.nodes[`person:${entry.person.key}`]) ?? automatic
+    );
   });
+
+  const nodes = new Map(
+    [...tree.nodes].map(([key, box]) => [key, { ...box }] as const)
+  );
+  const parallelEvents = new Map(
+    [...tree.parallelEvents].map(([key, box]) => [key, { ...box }] as const)
+  );
+  for (const entry of timeline) {
+    const box = nodes.get(entry.node.key);
+    const saved = validPoint(savedLayout.nodes[`timeline:${entry.node.key}`]);
+    if (!box || !saved) continue;
+    const deltaX = saved.x - box.x;
+    const deltaY = saved.y - box.y;
+    nodes.set(entry.node.key, { ...box, x: saved.x, y: saved.y });
+    for (const event of entry.node.parallel ?? []) {
+      const eventBox = parallelEvents.get(event.key);
+      if (!eventBox) continue;
+      parallelEvents.set(event.key, {
+        ...eventBox,
+        x: eventBox.x + deltaX,
+        y: eventBox.y + deltaY
+      });
+    }
+  }
+  const savedOpening = validPoint(savedLayout.nodes.opening);
+  const openingBox = savedOpening
+    ? { ...tree.opening, x: savedOpening.x, y: savedOpening.y }
+    : tree.opening;
+
+  const maximumX = Math.max(
+    tree.width,
+    openingBox.x + openingBox.width + 80,
+    ...[...peoplePositions.values()].map((point) => point.x + 92),
+    ...[...nodes.values()].map((box) => box.x + box.width + 80)
+  );
+  const maximumY = Math.max(
+    tree.height,
+    openingBox.y + openingBox.height + 92,
+    ...[...nodes.values()].map((box) => box.y + box.height + 92)
+  );
 
   return {
     ...tree,
+    width: maximumX,
+    height: maximumY,
+    nodes,
+    parallelEvents,
+    opening: openingBox,
     people: peoplePositions
   };
+}
+
+export function findCanvasNodeBox(
+  layout: Pick<StoryTreeLayout, "nodes" | "parallelEvents">,
+  key: string
+): NodeBox | undefined {
+  return layout.nodes.get(key) ?? layout.parallelEvents.get(key);
 }
 
 function createFlowEdges(
@@ -1096,7 +1670,7 @@ function createFlowEdges(
   diffItems: StoryDiffItem[]
 ): FlowEdge[] {
   const edges: FlowEdge[] = [];
-  const openingNodeBox = layout.nodes.get(opening);
+  const openingNodeBox = findCanvasNodeBox(layout, opening);
   const openingMarker = storyDiffMarker(diffItems, "story", "storyline");
   if (openingNodeBox) {
     edges.push({
@@ -1126,7 +1700,7 @@ function createFlowEdges(
     const from = { x: box.x + box.width / 2, y: box.y + box.height };
 
     if (node.next) {
-      const nextBox = layout.nodes.get(node.next);
+      const nextBox = findCanvasNodeBox(layout, node.next);
       if (nextBox) {
         edges.push({
           id: `${node.key}:next:${node.next}`,
@@ -1142,7 +1716,7 @@ function createFlowEdges(
 
     const routes = Object.entries(node.routes ?? {});
     routes.forEach(([condition, destination], index) => {
-      const destinationBox = layout.nodes.get(destination);
+      const destinationBox = findCanvasNodeBox(layout, destination);
       if (!destinationBox) return;
       edges.push({
         id: `${node.key}:route:${condition}:${destination}`,
@@ -1160,7 +1734,7 @@ function createFlowEdges(
     });
 
     node.waitFor?.forEach((dependency) => {
-      const dependencyBox = layout.parallelEvents.get(dependency) ?? layout.nodes.get(dependency);
+      const dependencyBox = findCanvasNodeBox(layout, dependency);
       if (!dependencyBox) return;
       edges.push({
         id: `${node.key}:waitFor:${dependency}`,
@@ -1200,20 +1774,23 @@ function createCanvasIndex(
   timeline: DisplayTimeline[]
 ): CanvasIndexItem[] {
   const diffItems = workspace.diff.items;
+  const layoutChanged = new Set((workspace.layoutDiff ?? []).map((item) => item.id));
   return [
     {
       id: "opening:storyline",
       label: "开场入口",
       meta: workspace.story.storyline.opening,
       target: { kind: "opening" } as const,
-      marker: storyDiffMarker(diffItems, "story", "storyline")
+      marker: storyDiffMarker(diffItems, "story", "storyline"),
+      layoutChanged: layoutChanged.has("opening")
     },
     ...people.map((entry) => ({
       id: `person:${entry.person.key}`,
       label: entry.person.name,
       meta: `人物 · ${entry.person.key} · ${entry.person.identity}`,
       target: { kind: "person", key: entry.person.key } as const,
-      marker: storyDiffMarker(diffItems, "cast", entry.person.key)
+      marker: storyDiffMarker(diffItems, "cast", entry.person.key),
+      layoutChanged: layoutChanged.has(`person:${entry.person.key}`)
     })),
     ...bonds.map((entry) => ({
       id: `bond:${entry.key}`,
@@ -1229,7 +1806,8 @@ function createCanvasIndex(
         ? `并行容器 · ${entry.node.parallel.length} 条泳道`
         : `${entry.node.at} · ${entry.node.event ?? "剧情事件"}`,
       target: { kind: "timeline", key: entry.node.key } as const,
-      marker: storyDiffMarker(diffItems, "timeline", entry.node.key)
+      marker: storyDiffMarker(diffItems, "timeline", entry.node.key),
+      layoutChanged: layoutChanged.has(`timeline:${entry.node.key}`)
     }))
   ];
 }
@@ -1254,10 +1832,16 @@ function DiffOverlaySummary({ workspace }: { workspace: StoryWorkspace }) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 font-mono text-[10px] text-kumo-warning">
       <GitDiffIcon size={13} />
-      <span>业务 Diff 已叠加到节点和边</span>
+      <span>工作区 Diff 已叠加到节点和边</span>
       <StoryDiffBadge action="added" fields={[String(counts.added)]} />
       <StoryDiffBadge action="modified" fields={[String(counts.modified)]} />
       <StoryDiffBadge action="removed" fields={[String(counts.removed)]} />
+      {(workspace.layoutDiff?.length ?? 0) > 0 && (
+        <StoryDiffBadge
+          action="modified"
+          fields={[`位置 ${workspace.layoutDiff!.length}`]}
+        />
+      )}
     </div>
   );
 }
@@ -1331,7 +1915,7 @@ function flowPath(from: Point, to: Point, dependency: boolean): string {
   return `M ${from.x} ${from.y} C ${from.x + offset} ${middleY}, ${to.x - offset} ${middleY}, ${to.x} ${to.y}`;
 }
 
-function diffStroke(action?: StoryDiffAction, fallback = "stroke-kumo-inactive"): string {
+function diffStroke(action?: StoryDiffAction, fallback = "stroke-kumo-subtle"): string {
   return action === "added"
     ? "stroke-kumo-success"
     : action === "removed"
@@ -1352,6 +1936,95 @@ function diffFill(action: StoryDiffAction): string {
 function diffText(marker: StoryDiffMarker): string {
   const prefix = marker.action === "added" ? "+" : marker.action === "removed" ? "−" : "~";
   return `${prefix} ${marker.fields.join("/") || (marker.action === "added" ? "新增" : marker.action === "removed" ? "删除" : "修改")}`;
+}
+
+function layoutDiffMarker(changed: boolean): StoryDiffMarker | undefined {
+  if (!changed) return undefined;
+  return {
+    action: "modified",
+    fields: ["位置"],
+    item: {
+      action: "modified",
+      category: "layout",
+      label: "位置"
+    }
+  };
+}
+
+export function canvasNodeDiffMarkers(
+  businessMarker: StoryDiffMarker | undefined,
+  layoutChanged: boolean
+): StoryDiffMarker[] {
+  const layoutMarker = layoutDiffMarker(layoutChanged);
+  return [businessMarker, layoutMarker].filter(
+    (marker): marker is StoryDiffMarker => marker !== undefined
+  );
+}
+
+function validPoint(value: unknown): Point | null {
+  if (!value || typeof value !== "object") return null;
+  const point = value as Partial<Point>;
+  return Number.isFinite(point.x) && Number.isFinite(point.y)
+    ? { x: point.x!, y: point.y! }
+    : null;
+}
+
+function currentLayoutNodeIds(
+  people: DisplayPerson[],
+  timeline: DisplayTimeline[]
+): Set<string> {
+  return new Set([
+    "opening",
+    ...people
+      .filter((entry) => !entry.removed)
+      .map((entry) => `person:${entry.person.key}`),
+    ...timeline
+      .filter((entry) => !entry.removed)
+      .map((entry) => `timeline:${entry.node.key}`)
+  ]);
+}
+
+export function mergeDraggedNodeLayout(
+  latestLayout: StoryLayout,
+  id: string,
+  point: Point,
+  currentNodeIds: ReadonlySet<string>
+): StoryLayout | null {
+  if (!currentNodeIds.has(id)) return null;
+  const currentNodes = Object.fromEntries(
+    Object.entries(latestLayout.nodes).filter(([nodeId]) =>
+      currentNodeIds.has(nodeId)
+    )
+  );
+  return {
+    version: 1,
+    nodes: { ...currentNodes, [id]: point }
+  };
+}
+
+function constrainNodePosition(id: string, point: Point): Point {
+  if (id.startsWith("person:")) {
+    return {
+      x: clamp(point.x, 82, 5_000),
+      y: clamp(point.y, 78, RELATION_HEIGHT - 48)
+    };
+  }
+  return {
+    x: clamp(point.x, 24, 5_000),
+    y: clamp(point.y, FLOW_START_Y + 22, 10_000)
+  };
+}
+
+function canvasNodeLabel(id: string): string {
+  if (id === "opening") return "开场入口";
+  if (id.startsWith("person:")) return `人物 ${id.slice("person:".length)}`;
+  return `剧情节点 ${id.slice("timeline:".length)}`;
+}
+
+function isEditableElement(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(
+    'button, a[href], input, textarea, select, summary, [role="button"], [role="link"], [role="application"], [contenteditable]:not([contenteditable="false"])'
+  ));
 }
 
 function activateFromKeyboard(

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchStoryEvents } from "../story/api";
+import { fetchStoryEvents, updateStoryLayout } from "../story/api";
 
 describe("story event history API", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -19,5 +19,36 @@ describe("story event history API", () => {
       })
     );
     expect(page).toEqual({ events: [], nextBeforeId: 42 });
+  });
+
+  it("writes versioned layout through the dedicated endpoint", async () => {
+    const workspace = { revision: 8 };
+    const fetchMock = vi.fn(async () => Response.json({ workspace }));
+    vi.stubGlobal("fetch", fetchMock);
+    const layout = {
+      version: 1 as const,
+      nodes: { "timeline:arrival": { x: 320, y: 480 } }
+    };
+
+    const result = await updateStoryLayout({
+      layout,
+      expectedRevision: 7,
+      source: "design-layout",
+      summary: "自动布局"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/chat/story/layout",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          layout,
+          expectedRevision: 7,
+          source: "design-layout",
+          summary: "自动布局"
+        })
+      })
+    );
+    expect(result).toEqual(workspace);
   });
 });

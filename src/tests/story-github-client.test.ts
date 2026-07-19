@@ -135,6 +135,120 @@ describe("GitHubAppClient", () => {
     });
   });
 
+  it("commits two files through one parent, tree, commit and ref update", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [];
+    let blobNumber = 0;
+    const fetcher = vi.fn<typeof fetch>(async (request, init) => {
+      const url = new URL(typeof request === "string" ? request : request.url);
+      const method = init?.method ?? "GET";
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      if (url.pathname.includes("/access_tokens")) {
+        return jsonResponse({ token: "token", expires_at: "2030-01-01T01:00:00Z" });
+      }
+      requests.push({ method, path: url.pathname, body });
+      if (method === "GET" && url.pathname.includes("/git/ref/")) {
+        return jsonResponse({ ref: "refs/heads/drafts/tester", object: { sha: "head-a" } });
+      }
+      if (method === "GET" && url.pathname.includes("/git/commits/")) {
+        return jsonResponse({ sha: "head-a", message: "old", tree: { sha: "tree-a" } });
+      }
+      if (url.pathname.endsWith("/git/blobs")) {
+        blobNumber += 1;
+        return jsonResponse({ sha: `blob-${blobNumber}` }, 201);
+      }
+      if (url.pathname.endsWith("/git/trees")) return jsonResponse({ sha: "tree-b" }, 201);
+      if (method === "POST" && url.pathname.endsWith("/git/commits")) {
+        return jsonResponse({ sha: "commit-b", message: "保存剧本包", tree: { sha: "tree-b" } }, 201);
+      }
+      if (method === "PATCH" && url.pathname.includes("/git/refs/")) {
+        return jsonResponse({ ref: "refs/heads/drafts/tester", object: { sha: "commit-b" } });
+      }
+      return jsonResponse({ message: "unexpected" }, 500);
+    });
+    const client = new GitHubAppClient({
+      appId: "123",
+      installationId: "147497819",
+      privateKey: privateKeyPem,
+      owner: "lusess123",
+      repo: "dsl-data",
+      now: () => Date.parse("2030-01-01T00:00:00Z"),
+      fetch: fetcher,
+    });
+
+    const commit = await client.commitFiles({
+      files: [
+        { path: "stories/default/story.json", content: "{}\n" },
+        { path: "stories/default/notes.md", content: "# Notes\n" },
+      ],
+      branch: "drafts/tester",
+      message: "保存剧本包",
+      expectedHeadSha: "head-a",
+    });
+
+    expect(commit.sha).toBe("commit-b");
+    expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: "/repos/lusess123/dsl-data/git/ref/heads/drafts/tester" },
+      { method: "GET", path: "/repos/lusess123/dsl-data/git/commits/head-a" },
+      { method: "POST", path: "/repos/lusess123/dsl-data/git/blobs" },
+      { method: "POST", path: "/repos/lusess123/dsl-data/git/blobs" },
+      { method: "POST", path: "/repos/lusess123/dsl-data/git/trees" },
+      { method: "POST", path: "/repos/lusess123/dsl-data/git/commits" },
+      { method: "PATCH", path: "/repos/lusess123/dsl-data/git/refs/heads/drafts/tester" },
+    ]);
+    expect(requests.filter((request) => request.path.endsWith("/git/blobs")).map((request) => request.body)).toEqual([
+      { content: "{}\n", encoding: "utf-8" },
+      { content: "# Notes\n", encoding: "utf-8" },
+    ]);
+    expect(requests.find((request) => request.path.endsWith("/git/trees"))?.body).toEqual({
+      base_tree: "tree-a",
+      tree: [
+        { path: "stories/default/story.json", mode: "100644", type: "blob", sha: "blob-1" },
+        { path: "stories/default/notes.md", mode: "100644", type: "blob", sha: "blob-2" },
+      ],
+    });
+  });
+
+  it("stops a multi-file commit before uploading blobs when the expected head is stale", async () => {
+    const requests: Array<{ method: string; path: string }> = [];
+    const fetcher = vi.fn<typeof fetch>(async (request, init) => {
+      const url = new URL(typeof request === "string" ? request : request.url);
+      const method = init?.method ?? "GET";
+      if (url.pathname.includes("/access_tokens")) {
+        return jsonResponse({ token: "token", expires_at: "2030-01-01T01:00:00Z" });
+      }
+      requests.push({ method, path: url.pathname });
+      if (method === "GET" && url.pathname.includes("/git/ref/")) {
+        return jsonResponse({ ref: "refs/heads/drafts/tester", object: { sha: "head-remote" } });
+      }
+      return jsonResponse({ message: "unexpected" }, 500);
+    });
+    const client = new GitHubAppClient({
+      appId: "123",
+      installationId: "147497819",
+      privateKey: privateKeyPem,
+      owner: "lusess123",
+      repo: "dsl-data",
+      now: () => Date.parse("2030-01-01T00:00:00Z"),
+      fetch: fetcher,
+    });
+
+    const error = await client.commitFiles({
+      files: [
+        { path: "stories/default/story.json", content: "{}\n" },
+        { path: "stories/default/notes.md", content: "# Notes\n" },
+      ],
+      branch: "drafts/tester",
+      message: "保存剧本包",
+      expectedHeadSha: "head-a",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(GitHubConflictError);
+    expect(error).toMatchObject({ expectedSha: "head-a", actualSha: "head-remote" });
+    expect(requests).toEqual([
+      { method: "GET", path: "/repos/lusess123/dsl-data/git/ref/heads/drafts/tester" },
+    ]);
+  });
+
   it("maps a competing ref update to a conflict with the current remote SHA", async () => {
     let refReads = 0;
     const fetcher = vi.fn<typeof fetch>(async (request, init) => {

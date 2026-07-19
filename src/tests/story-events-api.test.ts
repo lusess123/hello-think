@@ -2,6 +2,48 @@ import { describe, expect, it, vi } from "vitest";
 import { AssistantDirectory } from "../../agents/assistant/agent";
 
 describe("story event history route", () => {
+  it("updates layout through a revision-guarded dedicated route", async () => {
+    const layout = {
+      version: 1 as const,
+      nodes: { opening: { x: 420, y: 360 } }
+    };
+    const updated = { revision: 4, layout };
+    const updateLayout = vi.fn(() => updated);
+    const directory = Object.create(AssistantDirectory.prototype) as AssistantDirectory;
+    Object.defineProperties(directory, {
+      ensureStoryWorkspace: { value: vi.fn(async () => ({ revision: 3 })) },
+      getStoryStore: { value: () => ({ updateLayout }) },
+      storyPath: { value: "stories/default/story.json" },
+      storyOwnerLogin: { value: "tester" },
+      storyWorkspaceView: { value: (workspace: unknown) => workspace },
+      _broadcastStoryChange: { value: vi.fn() }
+    });
+
+    const response = await directory.onRequest(
+      new Request("https://example.com/chat/story/layout", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          layout,
+          expectedRevision: 3,
+          source: "design-layout",
+          summary: "保存拖动位置"
+        })
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ workspace: updated });
+    expect(updateLayout).toHaveBeenCalledWith({
+      path: "stories/default/story.json",
+      expectedRevision: 3,
+      layout,
+      actor: "user:tester",
+      source: "design-layout",
+      summary: "保存拖动位置"
+    });
+  });
+
   it("returns an older event page with a continuation cursor", async () => {
     const allEvents = [5, 4, 3, 2, 1].map((id) => ({ id }));
     const listEvents = vi.fn(

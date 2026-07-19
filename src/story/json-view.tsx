@@ -149,7 +149,7 @@ export function JsonView({
               }
               renderItem={(item, index) => (
                 <div className="border-b border-kumo-line px-3 py-2 font-mono text-[10px] leading-4 text-kumo-danger">
-                  <span className="mr-1.5 text-kumo-inactive">{index + 1}.</span>
+                  <span className="mr-1.5 text-kumo-subtle">{index + 1}.</span>
                   {item}
                 </div>
               )}
@@ -241,8 +241,8 @@ function JsonDiffRow({ line }: { line: StoryJsonDiffLine }) {
         : "border-l-transparent text-kumo-subtle";
   return (
     <div className={`grid h-6 grid-cols-[3rem_3rem_1.25rem_minmax(0,1fr)] items-center border-l-2 px-2 text-[10px] ${classes}`}>
-      <span className="text-right text-kumo-inactive">{line.oldLine ?? ""}</span>
-      <span className="text-right text-kumo-inactive">{line.newLine ?? ""}</span>
+      <span className="text-right text-kumo-subtle">{line.oldLine ?? ""}</span>
+      <span className="text-right text-kumo-subtle">{line.newLine ?? ""}</span>
       <span className="text-center">{prefix}</span>
       <code className="truncate whitespace-pre">{content}</code>
     </div>

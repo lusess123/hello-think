@@ -218,6 +218,39 @@ export type StoryBond = MysteryStoryDsl["bonds"][number];
 export type TimelineNode = MysteryStoryDsl["storyline"]["timeline"][number];
 export type PersonRelation = StoryBond["relation"];
 
+export const StoryLayoutNodePositionSchema = z
+  .object({
+    x: z.number().finite(),
+    y: z.number().finite()
+  })
+  .strict();
+
+const StoryLayoutNodeIdSchema = z.string().refine(
+  (id) =>
+    id === "opening" ||
+    (id.startsWith("person:") && id.length > "person:".length) ||
+    (id.startsWith("timeline:") && id.length > "timeline:".length),
+  "布局节点必须是 opening、person:<key> 或 timeline:<key>"
+);
+
+export const StoryLayoutSchema = z
+  .object({
+    version: z.literal(1),
+    nodes: z.record(StoryLayoutNodeIdSchema, StoryLayoutNodePositionSchema)
+  })
+  .strict();
+
+export type StoryLayoutNodePosition = z.infer<
+  typeof StoryLayoutNodePositionSchema
+>;
+export type StoryLayout = z.infer<typeof StoryLayoutSchema>;
+
+export interface StoryLayoutDiffItem {
+  id: string;
+  before?: StoryLayoutNodePosition;
+  after?: StoryLayoutNodePosition;
+}
+
 export type StoryDiffAction = "added" | "removed" | "modified";
 export type StoryDiffCategory = "cast" | "bonds" | "timeline" | "story";
 
@@ -249,6 +282,19 @@ export interface StoryDiff {
   jsonLines: StoryJsonDiffLine[];
 }
 
+export interface StoryWorkspaceEventDiff {
+  items?: StoryDiffItem[];
+  business?: {
+    summary?: {
+      added?: number;
+      removed?: number;
+      modified?: number;
+      total?: number;
+    };
+  };
+  layout?: StoryLayoutDiffItem[];
+}
+
 export interface StoryWorkspace {
   repository?: string;
   storyPath?: string;
@@ -262,6 +308,9 @@ export interface StoryWorkspace {
   dirty: boolean;
   story: MysteryStoryDsl;
   baseStory?: MysteryStoryDsl;
+  layout: StoryLayout;
+  baseLayout: StoryLayout;
+  layoutDiff: StoryLayoutDiffItem[];
   diff: StoryDiff;
   modifiedBy?: string;
   modifiedAt?: string;
@@ -289,10 +338,12 @@ export interface StoryWorkspaceEvent {
   source: string;
   summary?: string;
   createdAt: number | string;
-  diff?: StoryDiff;
+  diff?: StoryWorkspaceEventDiff;
   baseCommitSha?: string;
-  beforeStory?: MysteryStoryDsl;
-  afterStory?: MysteryStoryDsl;
+  beforeStory?: MysteryStoryDsl | null;
+  afterStory?: MysteryStoryDsl | null;
+  beforeLayout?: StoryLayout | null;
+  afterLayout?: StoryLayout | null;
   restoredFromSha?: string;
   restoredFromEventId?: number;
 }

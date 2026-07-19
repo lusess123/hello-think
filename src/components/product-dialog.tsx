@@ -118,7 +118,7 @@ export function ProductPromptDialog({
               autoFocus
               value={value}
               disabled={busy}
-              className="w-full rounded-md border border-kumo-line bg-kumo-base px-2.5 py-2 text-sm text-kumo-default outline-none placeholder:text-kumo-inactive focus:border-kumo-accent focus:ring-1 focus:ring-kumo-accent/30 disabled:opacity-50"
+              className="w-full rounded-md border border-kumo-line bg-kumo-base px-2.5 py-2 text-sm text-kumo-default outline-none placeholder:text-kumo-subtle focus:border-kumo-brand focus:ring-1 focus:ring-kumo-focus/30 disabled:opacity-50"
               onChange={(event) => onValueChange(event.target.value)}
             />
           </label>
